@@ -41,6 +41,23 @@ static void nvme_clear_ctrl(FemuCtrl *n, bool shutdown)
     n->dbs_addr_hva = 0;
     n->eis_addr = 0;
     n->eis_addr_hva = 0;
+
+    /* HMB access must stop once controller is disabled/reset. */
+    n->hmb_enabled = false;
+    n->hmb_hsize = 0;
+    n->hmb_size_bytes = 0;
+    n->hmb_desc_addr = 0;
+    n->hmb_desc_count = 0;
+    g_free(n->hmb_descs);
+    n->hmb_descs = NULL;
+
+    n->hmb_prev_valid = false;
+    n->hmb_prev_hsize = 0;
+    n->hmb_prev_size_bytes = 0;
+    n->hmb_prev_desc_addr = 0;
+    n->hmb_prev_desc_count = 0;
+    g_free(n->hmb_prev_descs);
+    n->hmb_prev_descs = NULL;
 }
 
 static int nvme_start_ctrl(FemuCtrl *n)
@@ -415,6 +432,8 @@ static void nvme_init_ctrl(FemuCtrl *n)
     id->lpa          = NVME_LPA_NS_SMART | NVME_LPA_CSE | NVME_LPA_EXTENDED;
     id->elpe         = n->elpe;
     id->npss         = 0;
+    id->hmpre        = cpu_to_le32(FEMU_HMB_HMPRE_UNITS);
+    id->hmmin        = cpu_to_le32(FEMU_HMB_HMMIN_UNITS);
     id->sqes         = (n->max_sqes << 4) | 0x6;
     id->cqes         = (n->max_cqes << 4) | 0x4;
     id->nn           = cpu_to_le32(n->num_namespaces);
@@ -613,6 +632,9 @@ static void femu_exit(PCIDevice *pci_dev)
     if (n->cmbsz) {
         memory_region_unref(&n->ctrl_mem);
     }
+
+    g_free(n->hmb_descs);
+    g_free(n->hmb_prev_descs);
 }
 
 static const Property femu_props[] = {

@@ -271,6 +271,19 @@ typedef struct QEMU_PACKED NvmeSglDescriptor {
     uint8_t  type;
 } NvmeSglDescriptor;
 
+typedef struct QEMU_PACKED NvmeHmbDescriptor {
+    uint64_t    addr;
+    uint32_t    size;
+    uint32_t    rsvd;
+} NvmeHmbDescriptor;
+
+typedef struct QEMU_PACKED NvmeHmbAttrs {
+    uint32_t    hsize;
+    uint32_t    hmdlal;
+    uint32_t    hmdlau;
+    uint32_t    hmdlec;
+} NvmeHmbAttrs;
+
 #define NVME_SGL_TYPE(type)     ((type >> 4) & 0xf)
 #define NVME_SGL_SUBTYPE(type)  (type & 0xf)
 
@@ -821,10 +834,35 @@ enum NvmeFeatureIds {
     NVME_INTERRUPT_VECTOR_CONF      = 0x9,
     NVME_WRITE_ATOMICITY            = 0xa,
     NVME_ASYNCHRONOUS_EVENT_CONF    = 0xb,
+    NVME_HOST_MEMORY_BUFFER         = 0xd,
     NVME_TIMESTAMP                  = 0xe,
     NVME_SOFTWARE_PROGRESS_MARKER   = 0x80,
     NVME_FID_MAX                    = 0x100
 };
+
+#define NVME_GETSETFEAT_FID_MASK     0xff
+#define NVME_GETSETFEAT_FID(dw10)    ((dw10) & NVME_GETSETFEAT_FID_MASK)
+
+#define NVME_GETFEAT_SELECT_SHIFT    8
+#define NVME_GETFEAT_SELECT_MASK     0x7
+#define NVME_GETFEAT_SELECT(dw10)    \
+    (((dw10) >> NVME_GETFEAT_SELECT_SHIFT) & NVME_GETFEAT_SELECT_MASK)
+
+#define NVME_SETFEAT_SAVE_SHIFT      31
+#define NVME_SETFEAT_SAVE_MASK       0x1
+#define NVME_SETFEAT_SAVE(dw10)      \
+    (((dw10) >> NVME_SETFEAT_SAVE_SHIFT) & NVME_SETFEAT_SAVE_MASK)
+
+#define NVME_HMB_EHM(dw11)           ((dw11) & 0x1)
+#define NVME_HMB_MR(dw11)            (((dw11) >> 1) & 0x1)
+#define NVME_HMB_ATTRS(mr, ehm)      ((((mr) & 0x1) << 1) | ((ehm) & 0x1))
+
+#define FEMU_HMB_HMMIN_MB            64
+#define FEMU_HMB_HMPRE_MB            128
+#define FEMU_HMB_MB_TO_4K_UNITS(mb)  (((mb) * MiB) / 4096)
+#define FEMU_HMB_HMMIN_UNITS         FEMU_HMB_MB_TO_4K_UNITS(FEMU_HMB_HMMIN_MB)
+#define FEMU_HMB_HMPRE_UNITS         FEMU_HMB_MB_TO_4K_UNITS(FEMU_HMB_HMPRE_MB)
+#define FEMU_HMB_TEST_MAGIC          0x1234567890123456ULL
 
 typedef enum NvmeFeatureCap {
     NVME_FEAT_CAP_SAVE      = 1 << 0,
@@ -1318,6 +1356,20 @@ typedef struct FemuCtrl {
     uint64_t        dbs_addr_hva;
     uint64_t        eis_addr_hva;
 
+    bool            hmb_enabled;
+    uint32_t        hmb_hsize;
+    uint64_t        hmb_size_bytes;
+    uint64_t        hmb_desc_addr;
+    uint32_t        hmb_desc_count;
+    NvmeHmbDescriptor *hmb_descs;
+
+    bool            hmb_prev_valid;
+    uint32_t        hmb_prev_hsize;
+    uint64_t        hmb_prev_size_bytes;
+    uint64_t        hmb_prev_desc_addr;
+    uint32_t        hmb_prev_desc_count;
+    NvmeHmbDescriptor *hmb_prev_descs;
+
     uint8_t         femu_mode;
     uint8_t         lver; /* Coperd: OCSSD version, 0x1 -> OC1.2, 0x2 -> OC2.0 */
     uint32_t        memsz;
@@ -1517,7 +1569,7 @@ static inline uint16_t nvme_check_mdts(FemuCtrl *n, size_t len)
 #define MN_MAX_LEN (64)
 #define ID_MAX_LEN (4)
 
-//#define FEMU_DEBUG_NVME
+#define FEMU_DEBUG_NVME
 #ifdef FEMU_DEBUG_NVME
 #define femu_debug(fmt, ...) \
     do { printf("[FEMU] Dbg: " fmt, ## __VA_ARGS__); } while (0)
