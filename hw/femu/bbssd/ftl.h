@@ -1,6 +1,7 @@
 #ifndef __FEMU_FTL_H
 #define __FEMU_FTL_H
 
+#include "../common/l2p-cache-config.h"
 #include "../nvme.h"
 
 #define INVALID_PPA     (~(0ULL))
@@ -197,9 +198,40 @@ struct nand_cmd {
 struct ssd {
     char *ssdname;
     struct ssdparams sp;
+    FemuCtrl *n;
     struct ssd_channel *ch;
     struct ppa *maptbl; /* page level mapping table */
     uint64_t *rmap;     /* reverse mapptbl, assume it's stored in OOB */
+
+    struct {
+        bool initialized;
+        uint32_t algo;
+        uint32_t page_size;
+        uint32_t ents_per_page;
+        uint32_t nr_slots;
+        uint32_t used_slots;
+        int32_t lru_head;
+        int32_t lru_tail;
+        FemuL2pCacheMeta *meta;
+        GHashTable *tag2slot;
+        struct ppa *slots;
+        uint64_t hits;
+        uint64_t misses;
+        uint64_t evicts;
+    } l2p_l1;
+
+    struct {
+        uint64_t l1_rd_lat;
+        uint64_t l1_wr_lat;
+        uint64_t l2_rd_lat;
+        uint64_t l2_wr_lat;
+        uint64_t l3_rd_lat;
+        uint64_t l3_wr_lat;
+    } l2p_lat;
+
+    bool l2p_cache_ready;
+    bool l2p_hmb_reject_logged;
+
     struct write_pointer wp;
     struct line_mgmt lm;
 

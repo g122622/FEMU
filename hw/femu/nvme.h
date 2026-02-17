@@ -18,6 +18,7 @@
 #include "inc/pqueue.h"
 #include "nand/nand.h"
 #include "timing-model/timing.h"
+#include "common/l2p-cache-config.h"
 
 #define NVME_ID_NS_LBADS(ns)                                                  \
     ((ns)->id_ns.lbaf[NVME_ID_NS_FLBAS_INDEX((ns)->id_ns.flbas)].lbads)
@@ -857,8 +858,8 @@ enum NvmeFeatureIds {
 #define NVME_HMB_MR(dw11)            (((dw11) >> 1) & 0x1)
 #define NVME_HMB_ATTRS(mr, ehm)      ((((mr) & 0x1) << 1) | ((ehm) & 0x1))
 
-#define FEMU_HMB_HMMIN_MB            64
-#define FEMU_HMB_HMPRE_MB            128
+#define FEMU_HMB_HMMIN_MB            (FEMU_L2P_L2_SIZE_KB / 1024)
+#define FEMU_HMB_HMPRE_MB            (FEMU_L2P_L2_SIZE_KB / 1024)
 #define FEMU_HMB_MB_TO_4K_UNITS(mb)  (((mb) * MiB) / 4096)
 #define FEMU_HMB_HMMIN_UNITS         FEMU_HMB_MB_TO_4K_UNITS(FEMU_HMB_HMMIN_MB)
 #define FEMU_HMB_HMPRE_UNITS         FEMU_HMB_MB_TO_4K_UNITS(FEMU_HMB_HMPRE_MB)
@@ -886,6 +887,36 @@ typedef struct NvmeRangeType {
     uint8_t     guid[16];
     uint8_t     rsvd48[16];
 } NvmeRangeType;
+
+typedef struct FemuL2pCacheMeta {
+    uint64_t tag;
+    int32_t prev;
+    int32_t next;
+    uint8_t valid;
+} FemuL2pCacheMeta;
+
+typedef struct FemuL2pL2Cache {
+    bool initialized;
+    uint32_t algo;
+    uint32_t page_size;
+    uint32_t ents_per_page;
+    uint32_t nr_slots;
+    uint32_t used_slots;
+    int32_t lru_head;
+    int32_t lru_tail;
+
+    FemuL2pCacheMeta *meta;
+    GHashTable *tag2slot;
+
+    uint64_t hmb_total_bytes;
+    uint32_t hmb_seg_count;
+    uint64_t *hmb_seg_addrs;
+    uint64_t *hmb_seg_sizes;
+
+    uint64_t hits;
+    uint64_t misses;
+    uint64_t evicts;
+} FemuL2pL2Cache;
 
 typedef struct NvmeLBAF {
     uint16_t    ms;
@@ -1369,6 +1400,8 @@ typedef struct FemuCtrl {
     uint64_t        hmb_prev_desc_addr;
     uint32_t        hmb_prev_desc_count;
     NvmeHmbDescriptor *hmb_prev_descs;
+
+    FemuL2pL2Cache l2p_l2;
 
     uint8_t         femu_mode;
     uint8_t         lver; /* Coperd: OCSSD version, 0x1 -> OC1.2, 0x2 -> OC2.0 */
