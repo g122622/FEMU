@@ -2,6 +2,8 @@
 
 //#define FEMU_DEBUG_FTL
 
+#define FEMU_L2P_STATS_LOG_PERIOD_NS      (5ULL * 1000 * 1000 * 1000)
+
 static void *ftl_thread(void *arg);
 
 static inline bool should_gc(struct ssd *ssd)
@@ -779,6 +781,68 @@ static void ssd_log_latency_config(struct ssd *ssd)
             l3_maptbl_bytes, l3_maptbl_bytes / 1024);
 }
 
+static void ssd_maybe_log_l2p_cache_stats(struct ssd *ssd)
+{
+    uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    uint64_t l1_hits = ssd->l2p_l1.hits;
+    uint64_t l1_misses = ssd->l2p_l1.misses;
+    uint64_t l1_total = l1_hits + l1_misses;
+    uint64_t l1_dhits = l1_hits - ssd->l2p_l1_last_hits;
+    uint64_t l1_dmisses = l1_misses - ssd->l2p_l1_last_misses;
+    uint64_t l1_dtotal = l1_dhits + l1_dmisses;
+    double l1_usage = ssd->l2p_l1.nr_slots ?
+            (100.0 * (double)ssd->l2p_l1.used_slots / (double)ssd->l2p_l1.nr_slots) : 0.0;
+    double l1_hit_rate = l1_total ? (100.0 * (double)l1_hits / (double)l1_total) : 0.0;
+    double l1_miss_rate = l1_total ? (100.0 * (double)l1_misses / (double)l1_total) : 0.0;
+    double l1_win_hit_rate = l1_dtotal ? (100.0 * (double)l1_dhits / (double)l1_dtotal) : 0.0;
+    double l1_win_miss_rate = l1_dtotal ? (100.0 * (double)l1_dmisses / (double)l1_dtotal) : 0.0;
+
+    if (ssd->l2p_stats_last_log_ns &&
+        now - ssd->l2p_stats_last_log_ns < FEMU_L2P_STATS_LOG_PERIOD_NS) {
+        return;
+    }
+
+    ftl_log("L2P L1 stats: usage=%.2f%% (%u/%u) hit=%" PRIu64 " miss=%" PRIu64
+            " evict=%" PRIu64 " hit_rate=%.2f%% miss_rate=%.2f%% "
+            "window_hit=%.2f%% window_miss=%.2f%%\n",
+            l1_usage, ssd->l2p_l1.used_slots, ssd->l2p_l1.nr_slots,
+            l1_hits, l1_misses, ssd->l2p_l1.evicts,
+            l1_hit_rate, l1_miss_rate, l1_win_hit_rate, l1_win_miss_rate);
+
+    if (ssd->n->l2p_l2.initialized) {
+        FemuL2pL2Cache *l2 = &ssd->n->l2p_l2;
+        uint64_t l2_hits = l2->hits;
+        uint64_t l2_misses = l2->misses;
+        uint64_t l2_total = l2_hits + l2_misses;
+        uint64_t l2_dhits = l2_hits - ssd->l2p_l2_last_hits;
+        uint64_t l2_dmisses = l2_misses - ssd->l2p_l2_last_misses;
+        uint64_t l2_dtotal = l2_dhits + l2_dmisses;
+        double l2_usage = l2->nr_slots ?
+                (100.0 * (double)l2->used_slots / (double)l2->nr_slots) : 0.0;
+        double l2_hit_rate = l2_total ? (100.0 * (double)l2_hits / (double)l2_total) : 0.0;
+        double l2_miss_rate = l2_total ? (100.0 * (double)l2_misses / (double)l2_total) : 0.0;
+        double l2_win_hit_rate = l2_dtotal ? (100.0 * (double)l2_dhits / (double)l2_dtotal) : 0.0;
+        double l2_win_miss_rate = l2_dtotal ? (100.0 * (double)l2_dmisses / (double)l2_dtotal) : 0.0;
+
+        ftl_log("L2P L2 stats: usage=%.2f%% (%u/%u) hit=%" PRIu64 " miss=%" PRIu64
+                " evict=%" PRIu64 " hit_rate=%.2f%% miss_rate=%.2f%% "
+                "window_hit=%.2f%% window_miss=%.2f%%\n",
+                l2_usage, l2->used_slots, l2->nr_slots,
+                l2_hits, l2_misses, l2->evicts,
+                l2_hit_rate, l2_miss_rate, l2_win_hit_rate, l2_win_miss_rate);
+    } else {
+        ftl_log("L2P L2 stats: not initialized (HMB not ready)\n");
+    }
+
+    ssd->l2p_stats_last_log_ns = now;
+    ssd->l2p_l1_last_hits = l1_hits;
+    ssd->l2p_l1_last_misses = l1_misses;
+    if (ssd->n->l2p_l2.initialized) {
+        ssd->l2p_l2_last_hits = ssd->n->l2p_l2.hits;
+        ssd->l2p_l2_last_misses = ssd->n->l2p_l2.misses;
+    }
+}
+
 static void ssd_init_l2p_l1_cache(struct ssd *ssd)
 {
     uint32_t ents_per_page = FEMU_L2P_PT_PAGE_SIZE / sizeof(struct ppa);
@@ -922,6 +986,7 @@ void ssd_init(FemuCtrl *n)
     /* initialize metadata hierarchy (L1 now, L2 on first I/O after HMB setup) */
     ssd_init_l2p_latency(ssd);
     ssd_log_latency_config(ssd);
+    ssd->l2p_stats_last_log_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
     ssd_init_l2p_l1_cache(ssd);
 
     /* initialize all the lines */
@@ -1506,6 +1571,8 @@ static void *ftl_thread(void *arg)
     ssd->to_poller = n->to_poller;
 
     while (1) {
+        ssd_maybe_log_l2p_cache_stats(ssd);
+
         for (i = 1; i <= n->nr_pollers; i++) {
             if (!ssd->to_ftl[i] || !femu_ring_count(ssd->to_ftl[i]))
                 continue;
