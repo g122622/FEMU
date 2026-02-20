@@ -17,14 +17,14 @@
  * - L2 (HMB over PCIe): fixed cost per metadata access
  * - L3 (flash-resident table): derived from NAND latencies via divisors below
  */
-#define FEMU_L2P_L1_RD_LAT_NS              0ULL
-#define FEMU_L2P_L1_WR_LAT_NS              0ULL
+#define FEMU_L2P_L1_RD_LAT_NS              10ULL
+#define FEMU_L2P_L1_WR_LAT_NS              10ULL
 #define FEMU_L2P_L2_RD_LAT_NS              1200ULL
 #define FEMU_L2P_L2_WR_LAT_NS              1800ULL
 
-/* L3 latency derived as NAND latency / divisor, min 1ns. */
-#define FEMU_L2P_L3_RD_LAT_DIV             4
-#define FEMU_L2P_L3_WR_LAT_DIV             4
+/* L3 latency derived as NAND latency * MUL, min 1ns. */
+#define FEMU_L2P_L3_RD_LAT_MUL             1
+#define FEMU_L2P_L3_WR_LAT_MUL             1
 
 enum femu_l2p_cache_algo {
     FEMU_L2P_CACHE_ALGO_LRU = 0,

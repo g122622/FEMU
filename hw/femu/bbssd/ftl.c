@@ -750,14 +750,33 @@ static void ssd_init_l2p_latency(struct ssd *ssd)
     ssd->l2p_lat.l1_wr_lat = FEMU_L2P_L1_WR_LAT_NS;
     ssd->l2p_lat.l2_rd_lat = FEMU_L2P_L2_RD_LAT_NS;
     ssd->l2p_lat.l2_wr_lat = FEMU_L2P_L2_WR_LAT_NS;
-    ssd->l2p_lat.l3_rd_lat = MAX(1ULL, (uint64_t)spp->pg_rd_lat / FEMU_L2P_L3_RD_LAT_DIV);
-    ssd->l2p_lat.l3_wr_lat = MAX(1ULL, (uint64_t)spp->pg_wr_lat / FEMU_L2P_L3_WR_LAT_DIV);
+    ssd->l2p_lat.l3_rd_lat = MAX(1ULL, (uint64_t)spp->pg_rd_lat * FEMU_L2P_L3_RD_LAT_MUL);
+    ssd->l2p_lat.l3_wr_lat = MAX(1ULL, (uint64_t)spp->pg_wr_lat * FEMU_L2P_L3_WR_LAT_MUL);
 
     ftl_log("L2P latency(ns): L1(rd=%" PRIu64 ",wr=%" PRIu64 ") L2(rd=%" PRIu64
             ",wr=%" PRIu64 ") L3(rd=%" PRIu64 ",wr=%" PRIu64 ")\n",
             ssd->l2p_lat.l1_rd_lat, ssd->l2p_lat.l1_wr_lat,
             ssd->l2p_lat.l2_rd_lat, ssd->l2p_lat.l2_wr_lat,
             ssd->l2p_lat.l3_rd_lat, ssd->l2p_lat.l3_wr_lat);
+}
+
+static void ssd_log_latency_config(struct ssd *ssd)
+{
+    struct ssdparams *spp = &ssd->sp;
+    uint64_t l3_maptbl_bytes = (uint64_t)spp->tt_pgs * sizeof(struct ppa);
+
+    ftl_log("Latency config(ns): NAND(rd=%d,wr=%d,erase=%d,ch_xfer=%d) "
+            "L2P(L1 rd=%" PRIu64 ",wr=%" PRIu64 "; L2 rd=%" PRIu64
+            ",wr=%" PRIu64 "; L3 rd=%" PRIu64 ",wr=%" PRIu64 ")\n",
+            spp->pg_rd_lat, spp->pg_wr_lat, spp->blk_er_lat, spp->ch_xfer_lat,
+            ssd->l2p_lat.l1_rd_lat, ssd->l2p_lat.l1_wr_lat,
+            ssd->l2p_lat.l2_rd_lat, ssd->l2p_lat.l2_wr_lat,
+            ssd->l2p_lat.l3_rd_lat, ssd->l2p_lat.l3_wr_lat);
+
+    ftl_log("L2P cache size: L1=%uKB, L2(target HMB)=%uKB, "
+            "L3(maptbl)=%" PRIu64 " bytes (%" PRIu64 " KiB)\n",
+            FEMU_L2P_L1_SIZE_KB, FEMU_L2P_L2_SIZE_KB,
+            l3_maptbl_bytes, l3_maptbl_bytes / 1024);
 }
 
 static void ssd_init_l2p_l1_cache(struct ssd *ssd)
@@ -902,6 +921,7 @@ void ssd_init(FemuCtrl *n)
 
     /* initialize metadata hierarchy (L1 now, L2 on first I/O after HMB setup) */
     ssd_init_l2p_latency(ssd);
+    ssd_log_latency_config(ssd);
     ssd_init_l2p_l1_cache(ssd);
 
     /* initialize all the lines */

@@ -27,6 +27,7 @@ static void bb_flip(FemuCtrl *n, NvmeCmd *cmd)
 {
     struct ssd *ssd = n->ssd;
     int64_t cdw10 = le64_to_cpu(cmd->cdw10);
+    femu_log("%s,Received FLIP cmd with cdw10=%" PRId64 "\n", n->devname, cdw10);
 
     switch (cdw10) {
     case FEMU_ENABLE_GC_DELAY:
