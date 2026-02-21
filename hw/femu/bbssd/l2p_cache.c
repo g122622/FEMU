@@ -1,4 +1,5 @@
 #include "l2p_cache.h"
+#include "hmb.h"
 
 #define FEMU_L2P_STATS_LOG_PERIOD_NS      (5ULL * 1000 * 1000 * 1000)
 
@@ -120,59 +121,18 @@ static inline void set_maptbl_ent_raw(struct ssd *ssd, uint64_t lpn,
     ssd->maptbl[lpn] = *ppa;
 }
 
-static bool l2p_l2_hmb_rw(struct ssd *ssd, uint64_t off, void *buf,
-                          uint32_t len, bool is_write)
-{
-    FemuCtrl *n = ssd->n;
-    FemuL2pL2Cache *l2 = &n->l2p_l2;
-    uint8_t *p = buf;
-    uint64_t cur = 0;
-    uint32_t left = len;
-
-    if (off + len > l2->hmb_total_bytes) {
-        return false;
-    }
-
-    for (uint32_t i = 0; i < l2->hmb_seg_count && left; i++) {
-        uint64_t seg_sz = l2->hmb_seg_sizes[i];
-
-        if (off >= cur + seg_sz) {
-            cur += seg_sz;
-            continue;
-        }
-
-        uint64_t in_seg = off > cur ? off - cur : 0;
-        uint64_t seg_avail = seg_sz - in_seg;
-        uint32_t xfer = MIN((uint64_t)left, seg_avail);
-        uint64_t gpa = l2->hmb_seg_addrs[i] + in_seg;
-
-        if (is_write) {
-            nvme_addr_write(n, gpa, p, xfer);
-        } else {
-            nvme_addr_read(n, gpa, p, xfer);
-        }
-
-        p += xfer;
-        off += xfer;
-        left -= xfer;
-        cur += seg_sz;
-    }
-
-    return left == 0;
-}
-
 static inline bool l2p_l2_slot_read_page(struct ssd *ssd, int32_t slot,
                                          struct ppa *dst)
 {
     uint64_t off = (uint64_t)slot * FEMU_L2P_PT_PAGE_SIZE;
-    return l2p_l2_hmb_rw(ssd, off, dst, FEMU_L2P_PT_PAGE_SIZE, false);
+    return femu_hmb_rw(ssd->n, off, dst, FEMU_L2P_PT_PAGE_SIZE, false);
 }
 
 static inline bool l2p_l2_slot_write_page(struct ssd *ssd, int32_t slot,
                                           struct ppa *src)
 {
     uint64_t off = (uint64_t)slot * FEMU_L2P_PT_PAGE_SIZE;
-    return l2p_l2_hmb_rw(ssd, off, src, FEMU_L2P_PT_PAGE_SIZE, true);
+    return femu_hmb_rw(ssd->n, off, src, FEMU_L2P_PT_PAGE_SIZE, true);
 }
 
 static int32_t l2p_find_l1_slot(struct ssd *ssd, uint64_t ptid)
@@ -501,7 +461,6 @@ static bool ssd_try_init_l2p_l2_cache(struct ssd *ssd)
 {
     FemuCtrl *n = ssd->n;
     FemuL2pL2Cache *l2 = &n->l2p_l2;
-    uint64_t hmb_total = 0;
     uint32_t wanted_slots;
 
     if (l2->initialized) {
@@ -512,9 +471,7 @@ static bool ssd_try_init_l2p_l2_cache(struct ssd *ssd)
         return false;
     }
 
-    for (uint32_t i = 0; i < n->hmb_desc_count; i++) {
-        hmb_total += (uint64_t)n->hmb_descs[i].size * n->page_size;
-    }
+    uint64_t hmb_total = femu_hmb_total_bytes(n);
 
     if (hmb_total < (uint64_t)FEMU_L2P_L2_SIZE_KB * 1024) {
         ftl_err("HMB too small for L2 cache: have=%" PRIu64 " want=%u\n",
@@ -535,27 +492,20 @@ static bool ssd_try_init_l2p_l2_cache(struct ssd *ssd)
     l2->lru_tail = -1;
     l2->meta = g_malloc0(sizeof(*l2->meta) * l2->nr_slots);
     l2->tag2slot = g_hash_table_new(g_int64_hash, g_int64_equal);
-    l2->hmb_total_bytes = 0;
-
-    l2->hmb_seg_count = n->hmb_desc_count;
-    l2->hmb_seg_addrs = g_malloc0(sizeof(*l2->hmb_seg_addrs) * l2->hmb_seg_count);
-    l2->hmb_seg_sizes = g_malloc0(sizeof(*l2->hmb_seg_sizes) * l2->hmb_seg_count);
+    l2->hmb_total_bytes = hmb_total;
+    l2->hmb_seg_count = 0;
+    l2->hmb_seg_addrs = NULL;
+    l2->hmb_seg_sizes = NULL;
 
     for (uint32_t i = 0; i < l2->nr_slots; i++) {
         l2->meta[i].prev = -1;
         l2->meta[i].next = -1;
     }
 
-    for (uint32_t i = 0; i < l2->hmb_seg_count; i++) {
-        l2->hmb_seg_addrs[i] = n->hmb_descs[i].addr;
-        l2->hmb_seg_sizes[i] = (uint64_t)n->hmb_descs[i].size * n->page_size;
-        l2->hmb_total_bytes += l2->hmb_seg_sizes[i];
-    }
-
     ftl_log("L2P L2 cache ready on HMB: size=%uKB slots=%u hmb_bytes=%" PRIu64
             " descs=%u\n",
             FEMU_L2P_L2_SIZE_KB, l2->nr_slots, l2->hmb_total_bytes,
-            l2->hmb_seg_count);
+            n->hmb_desc_count);
 
     return true;
 }
@@ -622,22 +572,6 @@ uint64_t femu_l2p_set_maptbl_ent_with_lat(struct ssd *ssd, uint64_t lpn,
 
 void femu_l2p_ctrl_reset(FemuCtrl *n)
 {
-    n->hmb_enabled = false;
-    n->hmb_hsize = 0;
-    n->hmb_size_bytes = 0;
-    n->hmb_desc_addr = 0;
-    n->hmb_desc_count = 0;
-    g_free(n->hmb_descs);
-    n->hmb_descs = NULL;
-
-    n->hmb_prev_valid = false;
-    n->hmb_prev_hsize = 0;
-    n->hmb_prev_size_bytes = 0;
-    n->hmb_prev_desc_addr = 0;
-    n->hmb_prev_desc_count = 0;
-    g_free(n->hmb_prev_descs);
-    n->hmb_prev_descs = NULL;
-
     n->l2p_l2.initialized = false;
     n->l2p_l2.used_slots = 0;
     n->l2p_l2.lru_head = -1;

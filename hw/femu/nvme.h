@@ -20,6 +20,7 @@
 #include "timing-model/timing.h"
 #include "common/l2p-cache-config.h"
 #include "common/l2p-cache-types.h"
+#include "common/hmb-types.h"
 
 #define NVME_ID_NS_LBADS(ns)                                                  \
     ((ns)->id_ns.lbaf[NVME_ID_NS_FLBAS_INDEX((ns)->id_ns.flbas)].lbads)
@@ -272,19 +273,6 @@ typedef struct QEMU_PACKED NvmeSglDescriptor {
     uint8_t  rsvd[3];
     uint8_t  type;
 } NvmeSglDescriptor;
-
-typedef struct QEMU_PACKED NvmeHmbDescriptor {
-    uint64_t    addr;
-    uint32_t    size;
-    uint32_t    rsvd;
-} NvmeHmbDescriptor;
-
-typedef struct QEMU_PACKED NvmeHmbAttrs {
-    uint32_t    hsize;
-    uint32_t    hmdlal;
-    uint32_t    hmdlau;
-    uint32_t    hmdlec;
-} NvmeHmbAttrs;
 
 #define NVME_SGL_TYPE(type)     ((type >> 4) & 0xf)
 #define NVME_SGL_SUBTYPE(type)  (type & 0xf)

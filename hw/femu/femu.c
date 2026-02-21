@@ -2,6 +2,7 @@
 #include "hw/qdev-properties.h"
 
 #include "./nvme.h"
+#include "./bbssd/hmb.h"
 #include "./bbssd/l2p_cache.h"
 
 #define NVME_SPEC_VER (0x00010400)
@@ -44,6 +45,7 @@ static void nvme_clear_ctrl(FemuCtrl *n, bool shutdown)
     n->eis_addr_hva = 0;
 
     /* HMB + L2P-L2 access must stop once controller is disabled/reset. */
+    femu_hmb_ctrl_reset(n);
     femu_l2p_ctrl_reset(n);
 }
 
