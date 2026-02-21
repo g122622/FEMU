@@ -19,6 +19,7 @@
 #include "nand/nand.h"
 #include "timing-model/timing.h"
 #include "common/l2p-cache-config.h"
+#include "common/l2p-cache-types.h"
 
 #define NVME_ID_NS_LBADS(ns)                                                  \
     ((ns)->id_ns.lbaf[NVME_ID_NS_FLBAS_INDEX((ns)->id_ns.flbas)].lbads)
@@ -887,36 +888,6 @@ typedef struct NvmeRangeType {
     uint8_t     guid[16];
     uint8_t     rsvd48[16];
 } NvmeRangeType;
-
-typedef struct FemuL2pCacheMeta {
-    uint64_t tag;
-    int32_t prev;
-    int32_t next;
-    uint8_t valid;
-} FemuL2pCacheMeta;
-
-typedef struct FemuL2pL2Cache {
-    bool initialized;
-    uint32_t algo;
-    uint32_t page_size;
-    uint32_t ents_per_page;
-    uint32_t nr_slots;
-    uint32_t used_slots;
-    int32_t lru_head;
-    int32_t lru_tail;
-
-    FemuL2pCacheMeta *meta;
-    GHashTable *tag2slot;
-
-    uint64_t hmb_total_bytes;
-    uint32_t hmb_seg_count;
-    uint64_t *hmb_seg_addrs;
-    uint64_t *hmb_seg_sizes;
-
-    uint64_t hits;
-    uint64_t misses;
-    uint64_t evicts;
-} FemuL2pL2Cache;
 
 typedef struct NvmeLBAF {
     uint16_t    ms;

@@ -2,6 +2,7 @@
 #include "hw/qdev-properties.h"
 
 #include "./nvme.h"
+#include "./bbssd/l2p_cache.h"
 
 #define NVME_SPEC_VER (0x00010400)
 
@@ -42,39 +43,8 @@ static void nvme_clear_ctrl(FemuCtrl *n, bool shutdown)
     n->eis_addr = 0;
     n->eis_addr_hva = 0;
 
-    /* HMB access must stop once controller is disabled/reset. */
-    n->hmb_enabled = false;
-    n->hmb_hsize = 0;
-    n->hmb_size_bytes = 0;
-    n->hmb_desc_addr = 0;
-    n->hmb_desc_count = 0;
-    g_free(n->hmb_descs);
-    n->hmb_descs = NULL;
-
-    n->hmb_prev_valid = false;
-    n->hmb_prev_hsize = 0;
-    n->hmb_prev_size_bytes = 0;
-    n->hmb_prev_desc_addr = 0;
-    n->hmb_prev_desc_count = 0;
-    g_free(n->hmb_prev_descs);
-    n->hmb_prev_descs = NULL;
-
-    n->l2p_l2.initialized = false;
-    n->l2p_l2.used_slots = 0;
-    n->l2p_l2.lru_head = -1;
-    n->l2p_l2.lru_tail = -1;
-    g_free(n->l2p_l2.meta);
-    n->l2p_l2.meta = NULL;
-    if (n->l2p_l2.tag2slot) {
-        g_hash_table_destroy(n->l2p_l2.tag2slot);
-        n->l2p_l2.tag2slot = NULL;
-    }
-    g_free(n->l2p_l2.hmb_seg_addrs);
-    n->l2p_l2.hmb_seg_addrs = NULL;
-    g_free(n->l2p_l2.hmb_seg_sizes);
-    n->l2p_l2.hmb_seg_sizes = NULL;
-    n->l2p_l2.hmb_seg_count = 0;
-    n->l2p_l2.hmb_total_bytes = 0;
+    /* HMB + L2P-L2 access must stop once controller is disabled/reset. */
+    femu_l2p_ctrl_reset(n);
 }
 
 static int nvme_start_ctrl(FemuCtrl *n)
@@ -650,14 +620,6 @@ static void femu_exit(PCIDevice *pci_dev)
         memory_region_unref(&n->ctrl_mem);
     }
 
-    g_free(n->hmb_descs);
-    g_free(n->hmb_prev_descs);
-    g_free(n->l2p_l2.meta);
-    if (n->l2p_l2.tag2slot) {
-        g_hash_table_destroy(n->l2p_l2.tag2slot);
-    }
-    g_free(n->l2p_l2.hmb_seg_addrs);
-    g_free(n->l2p_l2.hmb_seg_sizes);
 }
 
 static const Property femu_props[] = {
