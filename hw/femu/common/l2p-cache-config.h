@@ -6,7 +6,7 @@
  * Size units are KiB.
  */
 #define FEMU_L2P_L1_SIZE_KB                512
-#define FEMU_L2P_L2_SIZE_KB                (128 * 1024)
+#define FEMU_L2P_L2_SIZE_KB                (16 * 1024)
 
 /* L2P page-table cache granularity. */
 #define FEMU_L2P_PT_PAGE_SIZE              4096

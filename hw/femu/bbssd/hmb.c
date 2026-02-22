@@ -1,4 +1,5 @@
 #include "hmb.h"
+#include "write_buffer.h"
 
 uint64_t femu_hmb_total_bytes(FemuCtrl *n)
 {
@@ -66,6 +67,8 @@ void femu_hmb_ctrl_reset(FemuCtrl *n)
     n->hmb_prev_desc_count = 0;
     g_free(n->hmb_prev_descs);
     n->hmb_prev_descs = NULL;
+
+    femu_wb_ctrl_reset(n);
 }
 
 uint16_t femu_hmb_get_feature(FemuCtrl *n, NvmeCmd *cmd, NvmeCqe *cqe)
@@ -233,6 +236,11 @@ uint16_t femu_hmb_set_feature(FemuCtrl *n, NvmeCmd *cmd, NvmeCqe *cqe)
                        sizeof(verify_magic));
         femu_log("HMB enabled: hsize=%u pages, hmdlec=%u, bytes=%" PRIu64 "\n",
                  hsize, hmdlec, hmb_bytes);
+
+        if (!femu_wb_init_layout(n)) {
+            femu_log("WB init degraded: keep HMB for L2P cache only\n");
+        }
+
         femu_log("HMB magic verify at 0x%" PRIx64 " = 0x%" PRIx64 "\n",
                  n->hmb_descs[0].addr, le64_to_cpu(verify_magic));
         femu_debug("HMB test magic written to guest addr=0x%" PRIx64 "\n",
@@ -245,6 +253,7 @@ uint16_t femu_hmb_set_feature(FemuCtrl *n, NvmeCmd *cmd, NvmeCqe *cqe)
         n->hmb_desc_count = 0;
         g_free(n->hmb_descs);
         n->hmb_descs = NULL;
+        femu_wb_ctrl_reset(n);
         femu_log("HMB disabled\n");
     }
 

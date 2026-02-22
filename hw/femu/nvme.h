@@ -18,6 +18,7 @@
 #include "inc/pqueue.h"
 #include "nand/nand.h"
 #include "timing-model/timing.h"
+#include "lib/rb_tree.h"
 #include "common/l2p-cache-config.h"
 #include "common/l2p-cache-types.h"
 #include "common/hmb-types.h"
@@ -847,12 +848,94 @@ enum NvmeFeatureIds {
 #define NVME_HMB_MR(dw11)            (((dw11) >> 1) & 0x1)
 #define NVME_HMB_ATTRS(mr, ehm)      ((((mr) & 0x1) << 1) | ((ehm) & 0x1))
 
-#define FEMU_HMB_HMMIN_MB            (FEMU_L2P_L2_SIZE_KB / 1024)
-#define FEMU_HMB_HMPRE_MB            (FEMU_L2P_L2_SIZE_KB / 1024)
+#define FEMU_HMB_HMMIN_MB            64
+#define FEMU_HMB_HMPRE_MB            64
 #define FEMU_HMB_MB_TO_4K_UNITS(mb)  (((mb) * MiB) / 4096)
 #define FEMU_HMB_HMMIN_UNITS         FEMU_HMB_MB_TO_4K_UNITS(FEMU_HMB_HMMIN_MB)
 #define FEMU_HMB_HMPRE_UNITS         FEMU_HMB_MB_TO_4K_UNITS(FEMU_HMB_HMPRE_MB)
 #define FEMU_HMB_TEST_MAGIC          0x1234567890123456ULL
+
+#define FEMU_WB_ALIGN_BYTES          4096ULL
+#define FEMU_WB_MCP_ENTRY_BYTES      64U
+#define FEMU_WB_MCP_ENTRIES_PER_Q    1024U
+
+enum FemuMcpEntryType {
+    FEMU_MCP_ENTRY_WRITE_ALLOC = 0,
+    FEMU_MCP_ENTRY_READ_HIT    = 1,
+};
+
+enum FemuMcpEntryFlags {
+    FEMU_MCP_F_LAST_SEG        = 1u << 0,
+};
+
+typedef struct QEMU_PACKED FemuMcpEntry {
+    uint32_t cmd_id;
+    uint32_t metadata_size;
+
+    uint64_t hmb_vaddr;
+    uint64_t hmb_off;
+
+    uint32_t prp_off;
+    uint32_t length;
+
+    uint64_t slba;
+    uint64_t lpn;
+
+    uint32_t nlb;
+    uint16_t qid;
+    uint8_t type;
+    uint8_t flags;
+
+    uint8_t rsvd[8];
+} FemuMcpEntry;
+
+typedef struct FemuWbLocal {
+    uint16_t qid;
+
+    uint64_t wb_off;
+    uint64_t wb_bytes;
+    uint64_t head;
+    uint64_t tail;
+    uint64_t used;
+
+    uint64_t mcp_off;
+    uint64_t mcp_bytes;
+    uint32_t mcp_head;
+    uint32_t mcp_tail;
+    uint32_t mcp_capacity;
+    uint32_t mcp_free_cnt;
+
+    FemuRbTree lpn_index;
+    QemuMutex lpn_index_lock;
+    bool lpn_index_lock_inited;
+
+    uint64_t idx_hits;
+    uint64_t idx_misses;
+    uint64_t flush_bytes;
+    uint64_t mcp_full_cnt;
+    uint64_t fallback_cnt;
+} FemuWbLocal;
+
+typedef struct FemuWriteBuffer {
+    bool layout_ready;
+    bool wb_enabled;
+    bool gate_waiting_kva_push;
+
+    uint64_t hmb_wb_base;
+    uint64_t hmb_wb_bytes;
+
+    uint32_t nr_queues;
+    uint32_t mcp_entries_per_q;
+    uint32_t mcp_entry_bytes;
+
+    FemuWbLocal *locals;
+
+    uint64_t idx_hits;
+    uint64_t idx_misses;
+    uint64_t flush_bytes;
+    uint64_t mcp_full_cnt;
+    uint64_t fallback_cnt;
+} FemuWriteBuffer;
 
 typedef enum NvmeFeatureCap {
     NVME_FEAT_CAP_SAVE      = 1 << 0,
@@ -979,6 +1062,7 @@ static inline void nvme_check_size(void)
     QEMU_BUILD_BUG_ON(sizeof(NvmeSmartLog) != 512);
     QEMU_BUILD_BUG_ON(sizeof(NvmeIdCtrl) != 4096);
     QEMU_BUILD_BUG_ON(sizeof(NvmeIdNs) != 4096);
+    QEMU_BUILD_BUG_ON(sizeof(FemuMcpEntry) != FEMU_WB_MCP_ENTRY_BYTES);
 
     /* Coperd: FIXME, check FEMU OC structure size */
     //oc12_check_size();
@@ -1361,6 +1445,7 @@ typedef struct FemuCtrl {
     NvmeHmbDescriptor *hmb_prev_descs;
 
     FemuL2pL2Cache l2p_l2;
+    FemuWriteBuffer wb;
 
     uint8_t         femu_mode;
     uint8_t         lver; /* Coperd: OCSSD version, 0x1 -> OC1.2, 0x2 -> OC2.0 */
