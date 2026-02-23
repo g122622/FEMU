@@ -1,4 +1,5 @@
 #include "./nvme.h"
+#include "./bbssd/write_buffer.h"
 
 static uint16_t nvme_io_cmd(FemuCtrl *n, NvmeCmd *cmd, NvmeRequest *req);
 
@@ -503,6 +504,15 @@ static uint16_t nvme_io_cmd(FemuCtrl *n, NvmeCmd *cmd, NvmeRequest *req)
 {
     NvmeNamespace *ns;
     uint32_t nsid = le32_to_cpu(cmd->nsid);
+
+    switch (cmd->opcode) {
+    case NVME_CMD_WB_NOTIFY_COPY_DONE:
+        return femu_wb_io_notify_copy_done(n, cmd, req);
+    case NVME_CMD_WB_NOTIFY_READ_DONE:
+        return femu_wb_io_notify_read_done(n, cmd, req);
+    default:
+        break;
+    }
 
     if (nsid == 0 || nsid > n->num_namespaces) {
         femu_err("%s, NVME_INVALID_NSID %" PRIu32 "\n", __func__, nsid);

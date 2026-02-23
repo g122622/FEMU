@@ -331,6 +331,7 @@ enum NvmeAdminCommands {
     NVME_ADM_CMD_SECURITY_SEND  = 0x81,
     NVME_ADM_CMD_SECURITY_RECV  = 0x82,
     NVME_ADM_CMD_SET_DB_MEMORY  = 0x7c,
+    NVME_ADM_CMD_WB_KVA_MAPPING_PUSH = 0xd0,
     NVME_ADM_CMD_FEMU_DEBUG     = 0xee,
     NVME_ADM_CMD_FEMU_FLIP      = 0xef,
 };
@@ -349,6 +350,8 @@ enum NvmeIoCommands {
     NVME_CMD_OC_ERASE           = 0x90,
     NVME_CMD_OC_WRITE           = 0x91,
     NVME_CMD_OC_READ            = 0x92,
+    NVME_CMD_WB_NOTIFY_COPY_DONE = 0xd1,
+    NVME_CMD_WB_NOTIFY_READ_DONE = 0xd2,
 };
 
 typedef struct NvmeDeleteQ {
@@ -889,6 +892,17 @@ typedef struct QEMU_PACKED FemuMcpEntry {
     uint8_t rsvd[8];
 } FemuMcpEntry;
 
+typedef struct QEMU_PACKED FemuWbKvaPushEntry {
+    uint64_t gpa;
+    uint64_t kva;
+} FemuWbKvaPushEntry;
+
+typedef struct FemuWbKvaMapEntry {
+    uint64_t gpa;
+    uint64_t kva;
+    uint64_t size;
+} FemuWbKvaMapEntry;
+
 typedef struct FemuWbLocal {
     uint16_t qid;
 
@@ -929,6 +943,16 @@ typedef struct FemuWriteBuffer {
     uint32_t mcp_entry_bytes;
 
     FemuWbLocal *locals;
+
+    GHashTable *kva_map;
+    GPtrArray *kva_ranges;
+    bool kva_map_ready;
+    bool kva_seq_valid;
+    uint32_t kva_seq;
+
+    uint64_t kva_push_cnt;
+    uint64_t copy_done_notify_cnt;
+    uint64_t read_done_notify_cnt;
 
     uint64_t idx_hits;
     uint64_t idx_misses;

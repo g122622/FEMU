@@ -1,5 +1,6 @@
 #include "./nvme.h"
 #include "./bbssd/hmb.h"
+#include "./bbssd/write_buffer.h"
 
 #define NVME_IDENTIFY_DATA_SIZE 4096
 
@@ -41,6 +42,7 @@ static const uint32_t nvme_cse_acs[256] = {
     [NVME_ADM_CMD_SET_FEATURES]     = NVME_CMD_EFF_CSUPP,
     [NVME_ADM_CMD_GET_FEATURES]     = NVME_CMD_EFF_CSUPP,
     [NVME_ADM_CMD_ASYNC_EV_REQ]     = NVME_CMD_EFF_CSUPP,
+    [NVME_ADM_CMD_WB_KVA_MAPPING_PUSH] = NVME_CMD_EFF_CSUPP,
 };
 
 //static const uint32_t nvme_cse_iocs_none[256];
@@ -52,6 +54,8 @@ static const uint32_t nvme_cse_iocs_nvm[256] = {
     [NVME_CMD_READ]                 = NVME_CMD_EFF_CSUPP,
     [NVME_CMD_DSM]                  = NVME_CMD_EFF_CSUPP | NVME_CMD_EFF_LBCC,
     [NVME_CMD_COMPARE]              = NVME_CMD_EFF_CSUPP,
+    [NVME_CMD_WB_NOTIFY_COPY_DONE]  = NVME_CMD_EFF_CSUPP,
+    [NVME_CMD_WB_NOTIFY_READ_DONE]  = NVME_CMD_EFF_CSUPP,
 };
 
 static const uint32_t nvme_cse_iocs_zoned[256] = {
@@ -1088,6 +1092,9 @@ static uint16_t nvme_admin_cmd(FemuCtrl *n, NvmeCmd *cmd, NvmeCqe *cqe)
     case NVME_ADM_CMD_SET_DB_MEMORY:
         femu_debug("admin cmd,set_db_memory\n");
         return nvme_set_db_memory(n, cmd);
+    case NVME_ADM_CMD_WB_KVA_MAPPING_PUSH:
+        femu_debug("admin cmd,wb_kva_mapping_push\n");
+        return femu_wb_admin_kva_mapping_push(n, cmd);
     case NVME_ADM_CMD_ACTIVATE_FW:
     case NVME_ADM_CMD_DOWNLOAD_FW:
     case NVME_ADM_CMD_SECURITY_SEND:
