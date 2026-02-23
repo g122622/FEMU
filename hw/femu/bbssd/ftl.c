@@ -1,9 +1,23 @@
 #include "ftl.h"
 #include "l2p_cache.h"
+#include "hmb.h"
+#include "write_buffer.h"
 
 //#define FEMU_DEBUG_FTL
 
 static void *ftl_thread(void *arg);
+
+static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req);
+static inline struct ppa get_maptbl_ent(struct ssd *ssd, uint64_t lpn);
+static inline void set_maptbl_ent(struct ssd *ssd, uint64_t lpn, struct ppa *ppa);
+static inline void set_rmap_ent(struct ssd *ssd, uint64_t lpn, struct ppa *ppa);
+static void ssd_advance_write_pointer(struct ssd *ssd);
+static struct ppa get_new_page(struct ssd *ssd);
+static inline bool mapped_ppa(struct ppa *ppa);
+static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa,
+                                   struct nand_cmd *ncmd);
+static void mark_page_invalid(struct ssd *ssd, struct ppa *ppa);
+static void mark_page_valid(struct ssd *ssd, struct ppa *ppa);
 
 static inline bool should_gc(struct ssd *ssd)
 {
@@ -13,6 +27,142 @@ static inline bool should_gc(struct ssd *ssd)
 static inline bool should_gc_high(struct ssd *ssd)
 {
     return (ssd->lm.free_line_cnt <= ssd->sp.gc_thres_lines_high);
+}
+
+static bool wb_has_busy_lpn(struct ssd *ssd, uint16_t qid,
+                            uint64_t start_lpn, uint64_t end_lpn)
+{
+    FemuWbLocal *l;
+
+    if (!ssd->n->wb.layout_ready || !ssd->n->wb.locals ||
+        !qid || qid > ssd->n->wb.nr_queues) {
+        return false;
+    }
+
+    l = &ssd->n->wb.locals[qid];
+    qemu_mutex_lock(&l->lpn_index_lock);
+    for (uint64_t lpn = start_lpn; lpn <= end_lpn; lpn++) {
+        FemuRbNode *node = femu_rb_find(&l->lpn_index, lpn);
+
+        if (node && femu_rb_refcnt_read(node) > 0) {
+            qemu_mutex_unlock(&l->lpn_index_lock);
+            return true;
+        }
+    }
+    qemu_mutex_unlock(&l->lpn_index_lock);
+
+    return false;
+}
+
+static uint64_t wb_direct_fallback_write(struct ssd *ssd, NvmeRequest *req)
+{
+    NvmeNamespace *ns = req->ns;
+    const uint8_t lba_index = NVME_ID_NS_FLBAS_INDEX(ns->id_ns.flbas);
+    const uint8_t data_shift = ns->id_ns.lbaf[lba_index].lbads;
+    uint64_t data_offset = req->slba << data_shift;
+    int ret;
+
+    ret = backend_rw(ssd->n->mbe, &req->qsg, &data_offset, true);
+    if (ret) {
+        req->status = NVME_DNR;
+        return 0;
+    }
+
+    req->wb_path = false;
+    return ssd_write(ssd, req);
+}
+
+static void wb_try_flush_queue(struct ssd *ssd, uint16_t qid)
+{
+    FemuCtrl *n = ssd->n;
+    FemuWbLocal *l;
+    struct ssdparams *spp = &ssd->sp;
+
+    if (!n->wb.layout_ready || !n->wb.wb_enabled || !n->wb.locals ||
+        !qid || qid > n->wb.nr_queues) {
+        return;
+    }
+
+    l = &n->wb.locals[qid];
+
+    qemu_mutex_lock(&l->lpn_index_lock);
+    while (1) {
+        FemuWbSeg *seg = QTAILQ_FIRST(&l->flush_q);
+
+        if (!seg) {
+            break;
+        }
+
+        if (seg->state < FEMU_WB_SEG_COPY_DONE) {
+            break;
+        }
+
+        if (seg->state == FEMU_WB_SEG_COPY_DONE) {
+            struct ppa oldppa;
+            struct ppa newppa;
+            uint8_t *tmp;
+            struct nand_cmd swr;
+            uint64_t data_off = seg->slba * spp->secsz;
+
+            tmp = g_malloc(seg->len);
+            if (!tmp) {
+                break;
+            }
+
+            if (!femu_hmb_rw(n, seg->hmb_off, tmp, seg->len, false)) {
+                g_free(tmp);
+                break;
+            }
+
+            memcpy((uint8_t *)n->mbe->logical_space + data_off, tmp, seg->len);
+            g_free(tmp);
+
+            oldppa = get_maptbl_ent(ssd, seg->lpn);
+            if (mapped_ppa(&oldppa)) {
+                mark_page_invalid(ssd, &oldppa);
+                set_rmap_ent(ssd, INVALID_LPN, &oldppa);
+            }
+
+            newppa = get_new_page(ssd);
+            set_maptbl_ent(ssd, seg->lpn, &newppa);
+            set_rmap_ent(ssd, seg->lpn, &newppa);
+            mark_page_valid(ssd, &newppa);
+            ssd_advance_write_pointer(ssd);
+
+            swr.type = USER_IO;
+            swr.cmd = NAND_WRITE;
+            swr.stime = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+            (void)ssd_advance_status(ssd, &newppa, &swr);
+
+            seg->state = FEMU_WB_SEG_FLUSHED;
+            if (seg->rbn) {
+                seg->rbn->state = FEMU_WB_SEG_FLUSHED;
+            }
+
+            l->flush_bytes += seg->len;
+            n->wb.flush_bytes += seg->len;
+            n->wb.flush_done_cnt++;
+        }
+
+        if (seg->indexed && seg->rbn && femu_rb_refcnt_read(seg->rbn) == 0) {
+            femu_rb_remove(&l->lpn_index, seg->rbn);
+            g_free(seg->rbn);
+            seg->rbn = NULL;
+            seg->indexed = false;
+        }
+
+        if (seg->state == FEMU_WB_SEG_FLUSHED && !seg->indexed && seg->rel_off == l->head) {
+            l->head = (l->head + seg->len) % l->wb_bytes;
+            assert(l->used >= seg->len);
+            l->used -= seg->len;
+            QTAILQ_REMOVE(&l->flush_q, seg, entry);
+            g_free(seg);
+            continue;
+        }
+
+        break;
+    }
+    qemu_mutex_unlock(&l->lpn_index_lock);
 }
 
 static inline struct ppa get_maptbl_ent(struct ssd *ssd, uint64_t lpn)
@@ -994,6 +1144,9 @@ static void *ftl_thread(void *arg)
             }
 
             ftl_assert(req);
+            if (req->sq) {
+                femu_wb_note_queue_activity(n, req->sq->sqid);
+            }
             lat = 0;
             switch (req->cmd.opcode) {
             case NVME_CMD_WRITE:
@@ -1001,12 +1154,39 @@ static void *ftl_thread(void *arg)
                     req->status = NVME_INVALID_FIELD | NVME_DNR;
                     break;
                 }
-                lat = ssd_write(ssd, req);
+                if (req->wb_candidate && req->sq && req->ns &&
+                    femu_wb_should_candidate_write(n)) {
+                    NvmeNamespace *ns = req->ns;
+                    const uint8_t lba_index = NVME_ID_NS_FLBAS_INDEX(ns->id_ns.flbas);
+                    const uint8_t data_shift = ns->id_ns.lbaf[lba_index].lbads;
+                    uint64_t start_lpn = req->slba / ssd->sp.secs_per_pg;
+                    uint64_t end_lpn = (req->slba + req->nlb - 1) / ssd->sp.secs_per_pg;
+                    uint64_t data_size = (uint64_t)req->nlb << data_shift;
+
+                    if (!wb_has_busy_lpn(ssd, req->sq->sqid, start_lpn, end_lpn) &&
+                        femu_wb_stage_write_req(ssd, req, start_lpn, end_lpn,
+                                                ssd->sp.secsz, ssd->sp.secs_per_pg,
+                                                data_shift, data_size)) {
+                        qemu_sglist_destroy(&req->qsg);
+                        lat = 0;
+                    } else {
+                        lat = wb_direct_fallback_write(ssd, req);
+                    }
+                } else {
+                    lat = ssd_write(ssd, req);
+                }
                 break;
             case NVME_CMD_READ:
                 if (!femu_l2p_prepare(ssd)) {
                     req->status = NVME_INVALID_FIELD | NVME_DNR;
                     break;
+                }
+                if (req->sq && req->ns && n->wb.wb_enabled) {
+                    uint64_t start_lpn = req->slba / ssd->sp.secs_per_pg;
+                    uint64_t end_lpn = (req->slba + req->nlb - 1) / ssd->sp.secs_per_pg;
+                    (void)femu_wb_stage_read_hits(ssd, req, start_lpn, end_lpn,
+                                                  ssd->sp.secsz,
+                                                  ssd->sp.secs_per_pg);
                 }
                 lat = ssd_read(ssd, req);
                 break;
@@ -1035,6 +1215,14 @@ static void *ftl_thread(void *arg)
             /* clean one line if needed (in the background) */
             if (should_gc(ssd)) {
                 do_gc(ssd, false);
+            }
+
+            if (n->wb.layout_ready && n->wb.wb_enabled && n->wb.locals) {
+                for (uint16_t qid = 1; qid <= n->wb.nr_queues; qid++) {
+                    if (femu_wb_consume_flush_hint(n, qid)) {
+                        wb_try_flush_queue(ssd, qid);
+                    }
+                }
             }
         }
     }

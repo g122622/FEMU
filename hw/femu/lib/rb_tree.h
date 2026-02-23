@@ -39,6 +39,7 @@ typedef struct FemuRbNode {
     uint64_t hmb_off;
     uint32_t len;
     uint8_t state;
+    void *priv;
 
     int32_t refcnt;
 } FemuRbNode;

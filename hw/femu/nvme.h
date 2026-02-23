@@ -861,6 +861,9 @@ enum NvmeFeatureIds {
 #define FEMU_WB_ALIGN_BYTES          4096ULL
 #define FEMU_WB_MCP_ENTRY_BYTES      64U
 #define FEMU_WB_MCP_ENTRIES_PER_Q    1024U
+#define FEMU_WB_FLUSH_WATERMARK_PCT  80U
+#define FEMU_WB_IDLE_ROUNDS_DEFAULT  16U
+#define FEMU_CQE_RSVD_MCP_READY      (1U << 0)
 
 enum FemuMcpEntryType {
     FEMU_MCP_ENTRY_WRITE_ALLOC = 0,
@@ -869,6 +872,17 @@ enum FemuMcpEntryType {
 
 enum FemuMcpEntryFlags {
     FEMU_MCP_F_LAST_SEG        = 1u << 0,
+};
+
+enum FemuWbSegState {
+    FEMU_WB_SEG_STAGED = 0,
+    FEMU_WB_SEG_COPY_DONE = 1,
+    FEMU_WB_SEG_FLUSHED = 2,
+};
+
+enum FemuWbCmdTrackType {
+    FEMU_WB_CMD_TRACK_WRITE = 0,
+    FEMU_WB_CMD_TRACK_READ = 1,
 };
 
 typedef struct QEMU_PACKED FemuMcpEntry {
@@ -903,6 +917,38 @@ typedef struct FemuWbKvaMapEntry {
     uint64_t size;
 } FemuWbKvaMapEntry;
 
+typedef struct FemuWbSeg {
+    QTAILQ_ENTRY(FemuWbSeg) entry;
+
+    uint64_t alloc_seq;
+    uint64_t lpn;
+    uint64_t slba;
+    uint32_t nlb;
+
+    uint64_t hmb_off;
+    uint64_t hmb_vaddr;
+    uint64_t rel_off;
+
+    uint32_t len;
+    uint32_t prp_off;
+    uint32_t cmd_id;
+    uint16_t qid;
+
+    uint8_t state;
+    bool indexed;
+    FemuRbNode *rbn;
+} FemuWbSeg;
+
+QTAILQ_HEAD(FemuWbSegQ, FemuWbSeg);
+
+typedef struct FemuWbCmdTrack {
+    uint32_t cmd_id;
+    uint8_t type;
+    uint32_t seg_cnt;
+    FemuWbSeg **segs;
+    uint32_t *mcp_slots;
+} FemuWbCmdTrack;
+
 typedef struct FemuWbLocal {
     uint16_t qid;
 
@@ -922,6 +968,16 @@ typedef struct FemuWbLocal {
     FemuRbTree lpn_index;
     QemuMutex lpn_index_lock;
     bool lpn_index_lock_inited;
+
+    GHashTable *cmd_track_map;
+    union FemuWbSegQ flush_q;
+    uint64_t alloc_seq;
+
+    uint64_t activity_seq;
+    uint64_t monitor_seq;
+    uint32_t idle_rounds;
+    uint32_t idle_rounds_threshold;
+    bool flush_hint;
 
     uint64_t idx_hits;
     uint64_t idx_misses;
@@ -959,6 +1015,14 @@ typedef struct FemuWriteBuffer {
     uint64_t flush_bytes;
     uint64_t mcp_full_cnt;
     uint64_t fallback_cnt;
+
+    QemuThread flush_thread;
+    bool flush_thread_started;
+    bool flush_thread_stop;
+    uint64_t flush_thread_rounds;
+    uint64_t flush_kick_cnt;
+    uint64_t flush_done_cnt;
+    uint64_t wb_bypass_cnt;
 } FemuWriteBuffer;
 
 typedef enum NvmeFeatureCap {
@@ -1114,6 +1178,8 @@ typedef struct NvmeRequest {
     NvmeCmd                 cmd;
     NvmeCqe                 cqe;
     uint8_t                 cmd_opcode;
+    bool                    wb_candidate;
+    bool                    wb_path;
     QEMUSGList              qsg;
     QEMUIOVector            iov;
     QTAILQ_ENTRY(NvmeRequest)entry;

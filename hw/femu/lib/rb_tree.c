@@ -252,6 +252,7 @@ void femu_rb_node_init(FemuRbNode *n, uint64_t lpn, uint64_t hmb_off,
     n->hmb_off = hmb_off;
     n->len = len;
     n->state = state;
+    n->priv = NULL;
 
     qatomic_set(&n->refcnt, 0);
 }
@@ -335,6 +336,7 @@ FemuRbNode *femu_rb_upsert(FemuRbTree *t, FemuRbNode *n, bool *inserted)
         old->hmb_off = n->hmb_off;
         old->len = n->len;
         old->state = n->state;
+        old->priv = n->priv;
         if (inserted) {
             *inserted = false;
         }

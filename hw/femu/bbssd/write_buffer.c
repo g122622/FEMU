@@ -1,10 +1,36 @@
 #include "write_buffer.h"
+#include "ftl.h"
+#include "hmb.h"
 
 typedef struct FemuWbNotifyArgs {
     uint32_t cmd_id;
     uint16_t qid;
     uint32_t seg_cnt;
 } FemuWbNotifyArgs;
+
+static void *femu_wb_flush_monitor_thread(void *opaque);
+
+static void wb_free_cmd_track(gpointer data)
+{
+    FemuWbCmdTrack *t = data;
+
+    if (!t) {
+        return;
+    }
+
+    g_free(t->segs);
+    g_free(t->mcp_slots);
+    g_free(t);
+}
+
+static void wb_free_seg(FemuWbSeg *seg)
+{
+    if (!seg) {
+        return;
+    }
+
+    g_free(seg);
+}
 
 static inline uint64_t wb_align_up(uint64_t v, uint64_t a)
 {
@@ -23,6 +49,32 @@ static void femu_wb_disable_with_reason(FemuCtrl *n, const char *reason)
     n->wb.gate_waiting_kva_push = true;
 
     femu_log("WB disabled (degraded to L2P-only path): %s\n", reason);
+}
+
+static void wb_stop_monitor_thread(FemuWriteBuffer *wb)
+{
+    if (!wb->flush_thread_started) {
+        return;
+    }
+
+    wb->flush_thread_stop = true;
+    qemu_thread_join(&wb->flush_thread);
+    wb->flush_thread_started = false;
+}
+
+static void wb_start_monitor_thread(FemuCtrl *n)
+{
+    FemuWriteBuffer *wb = &n->wb;
+
+    if (wb->flush_thread_started || !wb->layout_ready) {
+        return;
+    }
+
+    wb->flush_thread_stop = false;
+    qemu_thread_create(&wb->flush_thread, "femu-wb-flush-mon",
+                       femu_wb_flush_monitor_thread, n,
+                       QEMU_THREAD_JOINABLE);
+    wb->flush_thread_started = true;
 }
 
 static void femu_wb_kva_map_reset(FemuWriteBuffer *wb)
@@ -70,6 +122,192 @@ static int wb_find_hmb_desc_by_base(FemuCtrl *n, uint64_t gpa)
     }
 
     return -1;
+}
+
+static bool wb_hmb_off_to_gpa(FemuCtrl *n, uint64_t off, uint64_t *gpa_out)
+{
+    uint64_t cur = 0;
+
+    for (uint32_t i = 0; i < n->hmb_desc_count; i++) {
+        uint64_t seg_sz = (uint64_t)n->hmb_descs[i].size * n->page_size;
+
+        if (off < cur + seg_sz) {
+            *gpa_out = n->hmb_descs[i].addr + (off - cur);
+            return true;
+        }
+
+        cur += seg_sz;
+    }
+
+    return false;
+}
+
+static bool wb_alloc_space_locked(FemuWbLocal *l, uint64_t len,
+                                  uint64_t *rel_off)
+{
+    uint64_t old_tail = l->tail;
+
+    if (len > l->wb_bytes || l->used + len > l->wb_bytes) {
+        return false;
+    }
+
+    if (l->tail >= l->head) {
+        uint64_t right = l->wb_bytes - l->tail;
+
+        if (right >= len) {
+            *rel_off = l->tail;
+            l->tail = (l->tail + len) % l->wb_bytes;
+            l->used += len;
+            return true;
+        }
+
+        if (l->head > len) {
+            *rel_off = 0;
+            l->tail = len;
+            l->used += len;
+            return true;
+        }
+    } else {
+        uint64_t hole = l->head - l->tail;
+
+        if (hole > len) {
+            *rel_off = l->tail;
+            l->tail += len;
+            l->used += len;
+            return true;
+        }
+    }
+
+    l->tail = old_tail;
+    return false;
+}
+
+static bool wb_mcp_push_locked(FemuCtrl *n, FemuWbLocal *l,
+                               FemuMcpEntry *entry, uint32_t *slot_out)
+{
+    uint64_t off;
+
+    if (!l->mcp_free_cnt) {
+        return false;
+    }
+
+    off = l->mcp_off + (uint64_t)l->mcp_tail * sizeof(FemuMcpEntry);
+    if (!femu_hmb_rw(n, off, entry, sizeof(*entry), true)) {
+        femu_err("WB MCP push failed: qid=%u slot=%u off=0x%" PRIx64 "\n",
+                 l->qid, l->mcp_tail, off);
+        return false;
+    }
+
+    if (slot_out) {
+        *slot_out = l->mcp_tail;
+    }
+    l->mcp_tail = (l->mcp_tail + 1) % l->mcp_capacity;
+    l->mcp_free_cnt--;
+
+    assert(l->mcp_tail < l->mcp_capacity);
+
+    return true;
+}
+
+static void wb_mcp_release_locked(FemuWbLocal *l, uint32_t *slots,
+                                  uint32_t seg_cnt)
+{
+    for (uint32_t i = 0; i < seg_cnt; i++) {
+        uint32_t s = slots[i];
+
+        if (s != l->mcp_head) {
+            femu_log("WB MCP release out-of-order: qid=%u expected_head=%u got=%u\n",
+                     l->qid, l->mcp_head, s);
+            l->mcp_head = (s + 1) % l->mcp_capacity;
+        } else {
+            l->mcp_head = (l->mcp_head + 1) % l->mcp_capacity;
+        }
+
+        l->mcp_free_cnt++;
+        if (l->mcp_free_cnt > l->mcp_capacity) {
+            l->mcp_free_cnt = l->mcp_capacity;
+        }
+    }
+}
+
+static void wb_flush_q_insert_sorted_locked(FemuWbLocal *l, FemuWbSeg *seg)
+{
+    FemuWbSeg *it;
+
+    QTAILQ_FOREACH(it, &l->flush_q, entry) {
+        if (seg->alloc_seq < it->alloc_seq) {
+            QTAILQ_INSERT_BEFORE(it, seg, entry);
+            return;
+        }
+    }
+
+    QTAILQ_INSERT_TAIL(&l->flush_q, seg, entry);
+}
+
+static void wb_try_reclaim_head_locked(FemuWbLocal *l)
+{
+    FemuWbSeg *head_seg;
+
+    while ((head_seg = QTAILQ_FIRST(&l->flush_q))) {
+        if (head_seg->state != FEMU_WB_SEG_FLUSHED || head_seg->indexed) {
+            break;
+        }
+
+        if (head_seg->rel_off != l->head) {
+            break;
+        }
+
+        l->head = (l->head + head_seg->len) % l->wb_bytes;
+        assert(l->used >= head_seg->len);
+        l->used -= head_seg->len;
+
+        QTAILQ_REMOVE(&l->flush_q, head_seg, entry);
+        wb_free_seg(head_seg);
+    }
+
+    assert(l->used <= l->wb_bytes);
+}
+
+static FemuWbCmdTrack *wb_lookup_cmd_track_locked(FemuWbLocal *l,
+                                                   uint32_t cmd_id)
+{
+    return l->cmd_track_map ? g_hash_table_lookup(l->cmd_track_map, &cmd_id) : NULL;
+}
+
+static bool wb_insert_cmd_track_locked(FemuWbLocal *l, FemuWbCmdTrack *track)
+{
+    uint32_t *key;
+
+    if (!l->cmd_track_map) {
+        l->cmd_track_map = g_hash_table_new_full(g_int_hash, g_int_equal,
+                                                 g_free, wb_free_cmd_track);
+        if (!l->cmd_track_map) {
+            return false;
+        }
+    }
+
+    if (g_hash_table_lookup(l->cmd_track_map, &track->cmd_id)) {
+        femu_err("WB cmd-track conflict: qid=%u cmd_id=%u\n",
+                 l->qid, track->cmd_id);
+        return false;
+    }
+
+    key = g_malloc(sizeof(*key));
+    if (!key) {
+        return false;
+    }
+    *key = track->cmd_id;
+    g_hash_table_insert(l->cmd_track_map, key, track);
+    return true;
+}
+
+static void wb_remove_cmd_track_locked(FemuWbLocal *l, uint32_t cmd_id)
+{
+    if (!l->cmd_track_map) {
+        return;
+    }
+
+    g_hash_table_remove(l->cmd_track_map, &cmd_id);
 }
 
 static bool wb_parse_notify_args(FemuCtrl *n, NvmeCmd *cmd,
@@ -129,11 +367,24 @@ void femu_wb_ctrl_reset(FemuCtrl *n)
 {
     FemuWriteBuffer *wb = &n->wb;
 
+    wb_stop_monitor_thread(wb);
+
     if (wb->locals) {
         for (uint32_t qid = 1; qid <= n->nr_io_queues; qid++) {
             FemuWbLocal *l = &wb->locals[qid];
+            FemuWbSeg *seg, *next;
 
             if (l->lpn_index_lock_inited) {
+                if (l->cmd_track_map) {
+                    g_hash_table_destroy(l->cmd_track_map);
+                    l->cmd_track_map = NULL;
+                }
+
+                QTAILQ_FOREACH_SAFE(seg, &l->flush_q, entry, next) {
+                    QTAILQ_REMOVE(&l->flush_q, seg, entry);
+                    wb_free_seg(seg);
+                }
+
                 qemu_mutex_destroy(&l->lpn_index_lock);
                 l->lpn_index_lock_inited = false;
             }
@@ -190,6 +441,416 @@ bool femu_wb_gpa_to_kva(FemuCtrl *n, uint64_t gpa, uint64_t *kva_out,
     }
 
     return false;
+}
+
+bool femu_wb_should_candidate_write(FemuCtrl *n)
+{
+    return n->wb.layout_ready && n->wb.wb_enabled && !n->wb.gate_waiting_kva_push;
+}
+
+bool femu_wb_stage_write_req(struct ssd *ssd, NvmeRequest *req,
+                             uint64_t start_lpn, uint64_t end_lpn,
+                             uint32_t secsz, uint32_t secs_per_pg,
+                             uint8_t data_shift, uint64_t data_size)
+{
+    FemuCtrl *n = ssd->n;
+    FemuWbLocal *l;
+    FemuWbCmdTrack *track = NULL;
+    uint32_t qid;
+    uint32_t seg_cnt;
+    uint32_t cmd_id;
+    uint64_t req_start_sec = req->slba;
+    uint64_t req_end_sec = req->slba + req->nlb;
+    uint64_t snap_head, snap_tail, snap_used;
+    uint32_t snap_mcp_head, snap_mcp_tail, snap_mcp_free;
+    bool staged_ok = false;
+
+    if (!femu_wb_should_candidate_write(n) || !n->wb.locals) {
+        return false;
+    }
+
+    qid = req->sq ? req->sq->sqid : 0;
+    if (!qid || qid > n->wb.nr_queues) {
+        return false;
+    }
+
+    l = &n->wb.locals[qid];
+    cmd_id = le16_to_cpu(req->cmd.cid);
+    seg_cnt = (uint32_t)(end_lpn - start_lpn + 1);
+
+    qemu_mutex_lock(&l->lpn_index_lock);
+
+    l->activity_seq++;
+    l->idle_rounds = 0;
+
+    if (data_size > l->wb_bytes) {
+        l->fallback_cnt++;
+        n->wb.fallback_cnt++;
+        n->wb.wb_bypass_cnt++;
+        femu_log("WB Bypass: req_size=%" PRIu64 " > wb_capacity=%" PRIu64
+                 ", direct write to NAND\n",
+                 data_size, l->wb_bytes);
+        goto out_unlock;
+    }
+
+    if (seg_cnt == 0 || l->mcp_free_cnt < seg_cnt) {
+        l->mcp_full_cnt++;
+        n->wb.mcp_full_cnt++;
+        l->fallback_cnt++;
+        n->wb.fallback_cnt++;
+        femu_log("WB fallback(write): qid=%u cmd_id=%u mcp_free=%u need=%u\n",
+                 qid, cmd_id, l->mcp_free_cnt, seg_cnt);
+        goto out_unlock;
+    }
+
+    track = g_malloc0(sizeof(*track));
+    if (!track) {
+        goto out_unlock;
+    }
+
+    track->cmd_id = cmd_id;
+    track->type = FEMU_WB_CMD_TRACK_WRITE;
+    track->seg_cnt = seg_cnt;
+    track->segs = g_malloc0(sizeof(*track->segs) * seg_cnt);
+    track->mcp_slots = g_malloc0(sizeof(*track->mcp_slots) * seg_cnt);
+    if (!track->segs || !track->mcp_slots) {
+        wb_free_cmd_track(track);
+        track = NULL;
+        goto out_unlock;
+    }
+
+    snap_head = l->head;
+    snap_tail = l->tail;
+    snap_used = l->used;
+    snap_mcp_head = l->mcp_head;
+    snap_mcp_tail = l->mcp_tail;
+    snap_mcp_free = l->mcp_free_cnt;
+
+    for (uint32_t i = 0; i < seg_cnt; i++) {
+        uint64_t lpn = start_lpn + i;
+        uint64_t lpn_start = lpn * secs_per_pg;
+        uint64_t lpn_end = lpn_start + secs_per_pg;
+        uint64_t ov_start = MAX(req_start_sec, lpn_start);
+        uint64_t ov_end = MIN(req_end_sec, lpn_end);
+        uint64_t ov_secs;
+        uint64_t rel_off;
+        uint64_t abs_off;
+        uint64_t gpa;
+        uint64_t kva;
+        uint64_t kva_max;
+        uint32_t seg_len;
+        uint32_t prp_off;
+        FemuWbSeg *seg;
+        FemuMcpEntry me;
+
+        if (ov_end <= ov_start) {
+            continue;
+        }
+
+        ov_secs = ov_end - ov_start;
+        seg_len = (uint32_t)(ov_secs * secsz);
+        prp_off = (uint32_t)((ov_start - req_start_sec) * secsz);
+
+        if (!wb_alloc_space_locked(l, seg_len, &rel_off)) {
+            femu_log("WB fallback(write): qid=%u cmd_id=%u alloc failed len=%u used=%" PRIu64
+                     "/%" PRIu64 "\n",
+                     qid, cmd_id, seg_len, l->used, l->wb_bytes);
+            l->fallback_cnt++;
+            n->wb.fallback_cnt++;
+            goto rollback;
+        }
+
+        abs_off = l->wb_off + rel_off;
+        if (!wb_hmb_off_to_gpa(n, abs_off, &gpa) ||
+            !femu_wb_gpa_to_kva(n, gpa, &kva, &kva_max) || kva_max < seg_len) {
+            femu_err("WB fallback(write): qid=%u cmd_id=%u off=0x%" PRIx64
+                     " cannot map GPA/KVA\n",
+                     qid, cmd_id, abs_off);
+            l->fallback_cnt++;
+            n->wb.fallback_cnt++;
+            goto rollback;
+        }
+
+        seg = g_malloc0(sizeof(*seg));
+        if (!seg) {
+            goto rollback;
+        }
+
+        seg->alloc_seq = ++l->alloc_seq;
+        seg->lpn = lpn;
+        seg->slba = ov_start;
+        seg->nlb = (uint32_t)ov_secs;
+        seg->hmb_off = abs_off;
+        seg->hmb_vaddr = kva;
+        seg->rel_off = rel_off;
+        seg->len = seg_len;
+        seg->prp_off = prp_off;
+        seg->cmd_id = cmd_id;
+        seg->qid = qid;
+        seg->state = FEMU_WB_SEG_STAGED;
+        seg->indexed = false;
+        seg->rbn = NULL;
+        track->segs[i] = seg;
+
+        memset(&me, 0, sizeof(me));
+        me.cmd_id = cmd_id;
+        me.metadata_size = sizeof(me);
+        me.hmb_vaddr = seg->hmb_vaddr;
+        me.hmb_off = seg->hmb_off;
+        me.prp_off = seg->prp_off;
+        me.length = seg->len;
+        me.slba = seg->slba;
+        me.lpn = seg->lpn;
+        me.nlb = seg->nlb;
+        me.qid = qid;
+        me.type = FEMU_MCP_ENTRY_WRITE_ALLOC;
+        if (i == seg_cnt - 1) {
+            me.flags |= FEMU_MCP_F_LAST_SEG;
+        }
+
+        if (!wb_mcp_push_locked(n, l, &me, &track->mcp_slots[i])) {
+            wb_free_seg(seg);
+            track->segs[i] = NULL;
+            l->fallback_cnt++;
+            n->wb.fallback_cnt++;
+            goto rollback;
+        }
+    }
+
+    if (!wb_insert_cmd_track_locked(l, track)) {
+        goto rollback;
+    }
+
+    req->wb_path = true;
+    req->cqe.n.rsvd |= cpu_to_le32(FEMU_CQE_RSVD_MCP_READY);
+    n->wb.idx_hits += seg_cnt;
+    femu_log("WB stage write: qid=%u cmd_id=%u seg_cnt=%u bytes=%" PRIu64
+             " used=%" PRIu64 "/%" PRIu64 "\n",
+             qid, cmd_id, seg_cnt, data_size, l->used, l->wb_bytes);
+
+    staged_ok = true;
+    track = NULL;
+    goto out_unlock;
+
+rollback:
+    if (track) {
+        for (uint32_t i = 0; i < seg_cnt; i++) {
+            wb_free_seg(track->segs[i]);
+            track->segs[i] = NULL;
+        }
+        wb_free_cmd_track(track);
+        track = NULL;
+    }
+    l->head = snap_head;
+    l->tail = snap_tail;
+    l->used = snap_used;
+    l->mcp_head = snap_mcp_head;
+    l->mcp_tail = snap_mcp_tail;
+    l->mcp_free_cnt = snap_mcp_free;
+    req->wb_path = false;
+
+out_unlock:
+    qemu_mutex_unlock(&l->lpn_index_lock);
+    return staged_ok;
+}
+
+uint32_t femu_wb_stage_read_hits(struct ssd *ssd, NvmeRequest *req,
+                                 uint64_t start_lpn, uint64_t end_lpn,
+                                 uint32_t secsz, uint32_t secs_per_pg)
+{
+    FemuCtrl *n = ssd->n;
+    uint32_t qid;
+    FemuWbLocal *l;
+    uint32_t cmd_id;
+    uint64_t req_start_sec = req->slba;
+    uint64_t req_end_sec = req->slba + req->nlb;
+    uint32_t hit_cnt = 0;
+    FemuWbCmdTrack *track = NULL;
+
+    if (!femu_wb_should_candidate_write(n) || !n->wb.locals) {
+        return 0;
+    }
+
+    qid = req->sq ? req->sq->sqid : 0;
+    if (!qid || qid > n->wb.nr_queues) {
+        return 0;
+    }
+
+    l = &n->wb.locals[qid];
+    cmd_id = le16_to_cpu(req->cmd.cid);
+
+    qemu_mutex_lock(&l->lpn_index_lock);
+
+    l->activity_seq++;
+    l->idle_rounds = 0;
+
+    for (uint64_t lpn = start_lpn; lpn <= end_lpn; lpn++) {
+        FemuRbNode *node = femu_rb_find(&l->lpn_index, lpn);
+
+        if (!node || node->state < FEMU_WB_SEG_COPY_DONE || !node->priv) {
+            continue;
+        }
+
+        hit_cnt++;
+    }
+
+    if (!hit_cnt) {
+        qemu_mutex_unlock(&l->lpn_index_lock);
+        return 0;
+    }
+
+    if (l->mcp_free_cnt < hit_cnt) {
+        l->mcp_full_cnt++;
+        n->wb.mcp_full_cnt++;
+        qemu_mutex_unlock(&l->lpn_index_lock);
+        femu_log("WB read-hit fallback: qid=%u cmd_id=%u hit_cnt=%u mcp_free=%u\n",
+                 qid, cmd_id, hit_cnt, l->mcp_free_cnt);
+        return 0;
+    }
+
+    track = g_malloc0(sizeof(*track));
+    if (!track) {
+        qemu_mutex_unlock(&l->lpn_index_lock);
+        return 0;
+    }
+    track->cmd_id = cmd_id;
+    track->type = FEMU_WB_CMD_TRACK_READ;
+    track->seg_cnt = hit_cnt;
+    track->segs = g_malloc0(sizeof(*track->segs) * hit_cnt);
+    track->mcp_slots = g_malloc0(sizeof(*track->mcp_slots) * hit_cnt);
+    if (!track->segs || !track->mcp_slots) {
+        wb_free_cmd_track(track);
+        qemu_mutex_unlock(&l->lpn_index_lock);
+        return 0;
+    }
+
+    hit_cnt = 0;
+    for (uint64_t lpn = start_lpn; lpn <= end_lpn; lpn++) {
+        FemuRbNode *node = femu_rb_find(&l->lpn_index, lpn);
+        FemuWbSeg *seg;
+        uint64_t lpn_start = lpn * secs_per_pg;
+        uint64_t lpn_end = lpn_start + secs_per_pg;
+        uint64_t ov_start;
+        uint64_t ov_end;
+        uint64_t ov_secs;
+        uint64_t delta_secs;
+        FemuMcpEntry me;
+
+        if (!node || node->state < FEMU_WB_SEG_COPY_DONE || !node->priv) {
+            continue;
+        }
+
+        seg = node->priv;
+        ov_start = MAX(req_start_sec, lpn_start);
+        ov_end = MIN(req_end_sec, lpn_end);
+        if (ov_end <= ov_start) {
+            continue;
+        }
+
+        ov_secs = ov_end - ov_start;
+        delta_secs = ov_start - seg->slba;
+
+        femu_rb_refcnt_inc(node);
+        track->segs[hit_cnt] = seg;
+
+        memset(&me, 0, sizeof(me));
+        me.cmd_id = cmd_id;
+        me.metadata_size = sizeof(me);
+        me.hmb_vaddr = seg->hmb_vaddr + delta_secs * secsz;
+        me.hmb_off = seg->hmb_off + delta_secs * secsz;
+        me.prp_off = (uint32_t)((ov_start - req_start_sec) * secsz);
+        me.length = (uint32_t)(ov_secs * secsz);
+        me.slba = ov_start;
+        me.lpn = lpn;
+        me.nlb = (uint32_t)ov_secs;
+        me.qid = qid;
+        me.type = FEMU_MCP_ENTRY_READ_HIT;
+
+        if (!wb_mcp_push_locked(n, l, &me, &track->mcp_slots[hit_cnt])) {
+            femu_rb_refcnt_dec(node);
+            track->segs[hit_cnt] = NULL;
+            for (uint32_t j = 0; j < hit_cnt; j++) {
+                FemuWbSeg *s = track->segs[j];
+                if (s && s->rbn) {
+                    femu_rb_refcnt_dec(s->rbn);
+                }
+            }
+            wb_free_cmd_track(track);
+            qemu_mutex_unlock(&l->lpn_index_lock);
+            return 0;
+        }
+
+        hit_cnt++;
+    }
+
+    if (!hit_cnt) {
+        wb_free_cmd_track(track);
+        qemu_mutex_unlock(&l->lpn_index_lock);
+        return 0;
+    }
+
+    track->seg_cnt = hit_cnt;
+    {
+        uint64_t off = l->mcp_off + (uint64_t)track->mcp_slots[hit_cnt - 1] * sizeof(FemuMcpEntry);
+        FemuMcpEntry last;
+
+        if (femu_hmb_rw(n, off, &last, sizeof(last), false)) {
+            last.flags |= FEMU_MCP_F_LAST_SEG;
+            femu_hmb_rw(n, off, &last, sizeof(last), true);
+        }
+    }
+
+    if (!wb_insert_cmd_track_locked(l, track)) {
+        for (uint32_t i = 0; i < hit_cnt; i++) {
+            if (track->segs[i] && track->segs[i]->rbn) {
+                femu_rb_refcnt_dec(track->segs[i]->rbn);
+            }
+        }
+        wb_free_cmd_track(track);
+        qemu_mutex_unlock(&l->lpn_index_lock);
+        return 0;
+    }
+
+    req->cqe.n.rsvd |= cpu_to_le32(FEMU_CQE_RSVD_MCP_READY);
+    n->wb.idx_hits += hit_cnt;
+    l->idx_hits += hit_cnt;
+    femu_log("WB stage read-hit: qid=%u cmd_id=%u hit_cnt=%u\n",
+             qid, cmd_id, hit_cnt);
+
+    qemu_mutex_unlock(&l->lpn_index_lock);
+    return hit_cnt;
+}
+
+void femu_wb_note_queue_activity(FemuCtrl *n, uint16_t qid)
+{
+    FemuWbLocal *l;
+
+    if (!n->wb.layout_ready || !n->wb.locals || !qid || qid > n->wb.nr_queues) {
+        return;
+    }
+
+    l = &n->wb.locals[qid];
+    qemu_mutex_lock(&l->lpn_index_lock);
+    l->activity_seq++;
+    l->idle_rounds = 0;
+    qemu_mutex_unlock(&l->lpn_index_lock);
+}
+
+bool femu_wb_consume_flush_hint(FemuCtrl *n, uint16_t qid)
+{
+    FemuWbLocal *l;
+    bool hint;
+
+    if (!n->wb.layout_ready || !n->wb.locals || !qid || qid > n->wb.nr_queues) {
+        return false;
+    }
+
+    l = &n->wb.locals[qid];
+    qemu_mutex_lock(&l->lpn_index_lock);
+    hint = l->flush_hint;
+    l->flush_hint = false;
+    qemu_mutex_unlock(&l->lpn_index_lock);
+    return hint;
 }
 
 uint16_t femu_wb_admin_kva_mapping_push(FemuCtrl *n, NvmeCmd *cmd)
@@ -322,6 +983,8 @@ uint16_t femu_wb_io_notify_copy_done(FemuCtrl *n, NvmeCmd *cmd,
                                      NvmeRequest *req)
 {
     FemuWbNotifyArgs args = {0};
+    FemuWbLocal *l;
+    FemuWbCmdTrack *track;
 
     if (!wb_parse_notify_args(n, cmd, req, &args, "WB 0xd1")) {
         return NVME_SUCCESS;
@@ -333,6 +996,77 @@ uint16_t femu_wb_io_notify_copy_done(FemuCtrl *n, NvmeCmd *cmd,
         req->status = NVME_SUCCESS;
         return NVME_SUCCESS;
     }
+
+    l = &n->wb.locals[args.qid];
+    qemu_mutex_lock(&l->lpn_index_lock);
+
+    track = wb_lookup_cmd_track_locked(l, args.cmd_id);
+    if (!track || track->type != FEMU_WB_CMD_TRACK_WRITE) {
+        qemu_mutex_unlock(&l->lpn_index_lock);
+        femu_log("WB 0xd1 COPY_DONE: no pending write cmd_id=%u on qid=%u\n",
+                 args.cmd_id, args.qid);
+        req->status = NVME_SUCCESS;
+        return NVME_SUCCESS;
+    }
+
+    if (args.seg_cnt > track->seg_cnt) {
+        qemu_mutex_unlock(&l->lpn_index_lock);
+        req->status = NVME_INVALID_FIELD | NVME_DNR;
+        return NVME_SUCCESS;
+    }
+
+    wb_mcp_release_locked(l, track->mcp_slots, args.seg_cnt);
+
+    for (uint32_t i = 0; i < args.seg_cnt; i++) {
+        FemuWbSeg *seg = track->segs[i];
+        FemuRbNode *old;
+        FemuRbNode *node;
+
+        if (!seg) {
+            continue;
+        }
+
+        seg->state = FEMU_WB_SEG_COPY_DONE;
+
+        old = femu_rb_find(&l->lpn_index, seg->lpn);
+        if (old) {
+            if (femu_rb_refcnt_read(old) != 0) {
+                femu_log("WB 0xd1: keep old LPN=%" PRIu64 " due refcnt=%d\n",
+                         seg->lpn, femu_rb_refcnt_read(old));
+                seg->indexed = false;
+            } else {
+                FemuWbSeg *old_seg = old->priv;
+                femu_rb_remove(&l->lpn_index, old);
+                if (old_seg) {
+                    old_seg->indexed = false;
+                    old_seg->rbn = NULL;
+                }
+                g_free(old);
+                old = NULL;
+            }
+        }
+
+        if (!old) {
+            node = g_malloc0(sizeof(*node));
+            if (node) {
+                femu_rb_node_init(node, seg->lpn, seg->hmb_off,
+                                  seg->len, FEMU_WB_SEG_COPY_DONE);
+                node->priv = seg;
+                if (femu_rb_insert(&l->lpn_index, node)) {
+                    seg->indexed = true;
+                    seg->rbn = node;
+                } else {
+                    g_free(node);
+                }
+            }
+        }
+
+        wb_flush_q_insert_sorted_locked(l, seg);
+    }
+
+    wb_remove_cmd_track_locked(l, args.cmd_id);
+    wb_try_reclaim_head_locked(l);
+    qemu_mutex_unlock(&l->lpn_index_lock);
 
     n->wb.copy_done_notify_cnt++;
 
@@ -346,6 +1080,8 @@ uint16_t femu_wb_io_notify_read_done(FemuCtrl *n, NvmeCmd *cmd,
                                      NvmeRequest *req)
 {
     FemuWbNotifyArgs args = {0};
+    FemuWbLocal *l;
+    FemuWbCmdTrack *track;
 
     if (!wb_parse_notify_args(n, cmd, req, &args, "WB 0xd2")) {
         return NVME_SUCCESS;
@@ -357,6 +1093,52 @@ uint16_t femu_wb_io_notify_read_done(FemuCtrl *n, NvmeCmd *cmd,
         req->status = NVME_SUCCESS;
         return NVME_SUCCESS;
     }
+
+    l = &n->wb.locals[args.qid];
+    qemu_mutex_lock(&l->lpn_index_lock);
+
+    track = wb_lookup_cmd_track_locked(l, args.cmd_id);
+    if (!track || track->type != FEMU_WB_CMD_TRACK_READ) {
+        qemu_mutex_unlock(&l->lpn_index_lock);
+        req->status = NVME_SUCCESS;
+        return NVME_SUCCESS;
+    }
+
+    if (args.seg_cnt > track->seg_cnt) {
+        qemu_mutex_unlock(&l->lpn_index_lock);
+        req->status = NVME_INVALID_FIELD | NVME_DNR;
+        return NVME_SUCCESS;
+    }
+
+    wb_mcp_release_locked(l, track->mcp_slots, args.seg_cnt);
+
+    for (uint32_t i = 0; i < args.seg_cnt; i++) {
+        FemuWbSeg *seg = track->segs[i];
+        FemuRbNode *node;
+        int32_t new_ref;
+
+        if (!seg || !seg->rbn) {
+            continue;
+        }
+
+        node = seg->rbn;
+        new_ref = femu_rb_refcnt_dec(node);
+        if (new_ref < 0) {
+            femu_rb_refcnt_set(node, 0);
+            new_ref = 0;
+        }
+
+        if (seg->state == FEMU_WB_SEG_FLUSHED && new_ref == 0 && seg->indexed) {
+            femu_rb_remove(&l->lpn_index, node);
+            seg->indexed = false;
+            seg->rbn = NULL;
+            g_free(node);
+        }
+    }
+
+    wb_remove_cmd_track_locked(l, args.cmd_id);
+    wb_try_reclaim_head_locked(l);
+    qemu_mutex_unlock(&l->lpn_index_lock);
 
     n->wb.read_done_notify_cnt++;
 
@@ -457,6 +1239,15 @@ bool femu_wb_init_layout(FemuCtrl *n)
         femu_rb_tree_init(&l->lpn_index);
         qemu_mutex_init(&l->lpn_index_lock);
         l->lpn_index_lock_inited = true;
+        QTAILQ_INIT(&l->flush_q);
+        l->idle_rounds_threshold = FEMU_WB_IDLE_ROUNDS_DEFAULT;
+        l->flush_hint = false;
+        l->activity_seq = 0;
+        l->monitor_seq = 0;
+        l->idle_rounds = 0;
+        l->alloc_seq = 0;
+        l->cmd_track_map = g_hash_table_new_full(g_int_hash, g_int_equal,
+                             g_free, wb_free_cmd_track);
 
         assert(l->mcp_tail < l->mcp_capacity);
         assert(l->used <= l->wb_bytes);
@@ -480,6 +1271,8 @@ bool femu_wb_init_layout(FemuCtrl *n)
     wb->wb_enabled = false;
     wb->gate_waiting_kva_push = true;
 
+    wb_start_monitor_thread(n);
+
     femu_log("WB layout ready: HMB=%" PRIu64 "B L2P-L2=%" PRIu64
              "B WB_base=0x%" PRIx64 " WB_bytes=%" PRIu64
              "B nr_ioq=%u mcp_entries/q=%u mcp_entry_bytes=%u\n",
@@ -491,4 +1284,51 @@ bool femu_wb_init_layout(FemuCtrl *n)
     femu_log("WB capability gate: waiting for vendor admin 0xd0 before wb_enabled=true\n");
 
     return true;
+}
+
+static void *femu_wb_flush_monitor_thread(void *opaque)
+{
+    FemuCtrl *n = opaque;
+    FemuWriteBuffer *wb = &n->wb;
+
+    while (!wb->flush_thread_stop) {
+        if (!wb->layout_ready || !wb->locals) {
+            usleep(1000);
+            continue;
+        }
+
+        for (uint32_t qid = 1; qid <= wb->nr_queues; qid++) {
+            FemuWbLocal *l = &wb->locals[qid];
+            bool kick = false;
+
+            qemu_mutex_lock(&l->lpn_index_lock);
+
+            if (l->activity_seq == l->monitor_seq) {
+                l->idle_rounds++;
+            } else {
+                l->monitor_seq = l->activity_seq;
+                l->idle_rounds = 0;
+            }
+
+            if (l->wb_bytes && l->used * 100ULL >= l->wb_bytes * FEMU_WB_FLUSH_WATERMARK_PCT) {
+                kick = true;
+            }
+
+            if (l->used && l->idle_rounds >= l->idle_rounds_threshold) {
+                kick = true;
+            }
+
+            if (kick) {
+                l->flush_hint = true;
+                wb->flush_kick_cnt++;
+            }
+
+            qemu_mutex_unlock(&l->lpn_index_lock);
+        }
+
+        wb->flush_thread_rounds++;
+        usleep(1000);
+    }
+
+    return NULL;
 }

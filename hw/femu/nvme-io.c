@@ -285,6 +285,13 @@ uint16_t nvme_rw(FemuCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd, NvmeRequest *req)
     req->slba = slba;
     req->status = NVME_SUCCESS;
     req->nlb = nlb;
+    req->wb_candidate = false;
+    req->wb_path = false;
+
+    if (req->is_write && femu_wb_should_candidate_write(n)) {
+        req->wb_candidate = true;
+        return NVME_SUCCESS;
+    }
 
     ret = backend_rw(n->mbe, &req->qsg, &data_offset, req->is_write);
     if (!ret) {
@@ -463,6 +470,10 @@ static uint16_t nvme_compare(FemuCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
 static uint16_t nvme_flush(FemuCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
                            NvmeRequest *req)
 {
+    if (n->wb.layout_ready && n->wb.wb_enabled) {
+        femu_log("WB flush policy: FLUSH acknowledged without forced WB drain (temporary behavior)\n");
+    }
+
     return NVME_SUCCESS;
 }
 
