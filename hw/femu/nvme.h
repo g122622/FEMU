@@ -331,7 +331,7 @@ enum NvmeAdminCommands {
     NVME_ADM_CMD_SECURITY_SEND  = 0x81,
     NVME_ADM_CMD_SECURITY_RECV  = 0x82,
     NVME_ADM_CMD_SET_DB_MEMORY  = 0x7c,
-    NVME_ADM_CMD_WB_KVA_MAPPING_PUSH = 0xd0,
+    NVME_ADM_CMD_WB_KVA_MAPPING_PUSH = 0xd1,
     NVME_ADM_CMD_FEMU_DEBUG     = 0xee,
     NVME_ADM_CMD_FEMU_FLIP      = 0xef,
 };
@@ -350,8 +350,8 @@ enum NvmeIoCommands {
     NVME_CMD_OC_ERASE           = 0x90,
     NVME_CMD_OC_WRITE           = 0x91,
     NVME_CMD_OC_READ            = 0x92,
-    NVME_CMD_WB_NOTIFY_COPY_DONE = 0xd1,
-    NVME_CMD_WB_NOTIFY_READ_DONE = 0xd2,
+    NVME_CMD_WB_NOTIFY_COPY_DONE = 0xd5,
+    NVME_CMD_WB_NOTIFY_READ_DONE = 0xd9,
 };
 
 typedef struct NvmeDeleteQ {

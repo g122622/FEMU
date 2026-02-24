@@ -1132,7 +1132,9 @@ static void *ftl_thread(void *arg)
     ssd->to_poller = n->to_poller;
 
     while (1) {
-        femu_l2p_maybe_log_stats(ssd);
+        if (0) {
+            femu_l2p_maybe_log_stats(ssd);
+        }
 
         for (i = 1; i <= n->nr_pollers; i++) {
             if (!ssd->to_ftl[i] || !femu_ring_count(ssd->to_ftl[i]))

@@ -866,7 +866,7 @@ uint16_t femu_wb_admin_kva_mapping_push(FemuCtrl *n, NvmeCmd *cmd)
     FemuWbKvaPushEntry *entries = NULL;
 
     if (!n->hmb_enabled || !wb->layout_ready || !wb->locals) {
-        femu_err("WB 0xd0 reject: HMB/WB layout not ready (hmb_enabled=%d layout_ready=%d)\n",
+        femu_err("WB 0xd1 reject: HMB/WB layout not ready (hmb_enabled=%d layout_ready=%d)\n",
                  n->hmb_enabled, wb->layout_ready);
         return NVME_INVALID_FIELD | NVME_DNR;
     }
@@ -874,18 +874,18 @@ uint16_t femu_wb_admin_kva_mapping_push(FemuCtrl *n, NvmeCmd *cmd)
     assert(wb->hmb_wb_base + wb->hmb_wb_bytes <= n->hmb_size_bytes);
 
     if (action != 0x1) {
-        femu_err("WB 0xd0 reject: unsupported action=%u\n", action);
+        femu_err("WB 0xd1 reject: unsupported action=%u\n", action);
         return NVME_INVALID_FIELD | NVME_DNR;
     }
 
     if (!chunk_count || chunk_count != n->hmb_desc_count) {
-        femu_err("WB 0xd0 reject: chunk_count=%u hmb_desc_count=%u\n",
+        femu_err("WB 0xd1 reject: chunk_count=%u hmb_desc_count=%u\n",
                  chunk_count, n->hmb_desc_count);
         return NVME_INVALID_FIELD | NVME_DNR;
     }
 
     if (buf_size != (uint32_t)chunk_count * sizeof(FemuWbKvaPushEntry)) {
-        femu_err("WB 0xd0 reject: buf_size=%u expected=%zu\n",
+        femu_err("WB 0xd1 reject: buf_size=%u expected=%zu\n",
                  buf_size,
                  (size_t)chunk_count * sizeof(FemuWbKvaPushEntry));
         return NVME_INVALID_FIELD | NVME_DNR;
@@ -893,12 +893,12 @@ uint16_t femu_wb_admin_kva_mapping_push(FemuCtrl *n, NvmeCmd *cmd)
 
     if (wb->kva_seq_valid) {
         if (seq_num < wb->kva_seq) {
-            femu_err("WB 0xd0 reject: seq rollback new=%u old=%u\n",
+            femu_err("WB 0xd1 reject: seq rollback new=%u old=%u\n",
                      seq_num, wb->kva_seq);
             return NVME_INVALID_FIELD | NVME_DNR;
         }
         if (seq_num == wb->kva_seq) {
-            femu_log("WB 0xd0 idempotent replay: seq=%u, keeping existing KVA map\n",
+            femu_log("WB 0xd1 idempotent replay: seq=%u, keeping existing KVA map\n",
                      seq_num);
             return NVME_SUCCESS;
         }
@@ -906,19 +906,19 @@ uint16_t femu_wb_admin_kva_mapping_push(FemuCtrl *n, NvmeCmd *cmd)
 
     entries = g_malloc0(buf_size);
     if (!entries) {
-        femu_err("WB 0xd0 reject: no memory for %u bytes\n", buf_size);
+        femu_err("WB 0xd1 reject: no memory for %u bytes\n", buf_size);
         return NVME_INTERNAL_DEV_ERROR | NVME_DNR;
     }
 
     if (dma_write_prp(n, (uint8_t *)entries, buf_size, prp1, prp2)) {
-        femu_err("WB 0xd0 reject: failed to read mapping payload via PRP\n");
+        femu_err("WB 0xd1 reject: failed to read mapping payload via PRP\n");
         g_free(entries);
         return NVME_INVALID_FIELD | NVME_DNR;
     }
 
     femu_wb_kva_map_reset(wb);
     if (!femu_wb_kva_map_init(wb)) {
-        femu_err("WB 0xd0 reject: cannot initialize KVA map structures\n");
+        femu_err("WB 0xd1 reject: cannot initialize KVA map structures\n");
         g_free(entries);
         return NVME_INTERNAL_DEV_ERROR | NVME_DNR;
     }
@@ -929,7 +929,7 @@ uint16_t femu_wb_admin_kva_mapping_push(FemuCtrl *n, NvmeCmd *cmd)
         int desc_idx = wb_find_hmb_desc_by_base(n, entries[i].gpa);
 
         if (desc_idx < 0) {
-            femu_err("WB 0xd0 reject: gpa=0x%" PRIx64 " not found in HMB descriptors\n",
+            femu_err("WB 0xd1 reject: gpa=0x%" PRIx64 " not found in HMB descriptors\n",
                      entries[i].gpa);
             femu_wb_kva_map_reset(wb);
             g_free(entries);
@@ -937,7 +937,7 @@ uint16_t femu_wb_admin_kva_mapping_push(FemuCtrl *n, NvmeCmd *cmd)
         }
 
         if (!entries[i].kva) {
-            femu_err("WB 0xd0 reject: zero KVA for gpa=0x%" PRIx64 "\n",
+            femu_err("WB 0xd1 reject: zero KVA for gpa=0x%" PRIx64 "\n",
                      entries[i].gpa);
             femu_wb_kva_map_reset(wb);
             g_free(entries);
@@ -949,7 +949,7 @@ uint16_t femu_wb_admin_kva_mapping_push(FemuCtrl *n, NvmeCmd *cmd)
         if (!ent || !key) {
             g_free(ent);
             g_free(key);
-            femu_err("WB 0xd0 reject: no memory for map entry\n");
+            femu_err("WB 0xd1 reject: no memory for map entry\n");
             femu_wb_kva_map_reset(wb);
             g_free(entries);
             return NVME_INTERNAL_DEV_ERROR | NVME_DNR;
@@ -972,7 +972,7 @@ uint16_t femu_wb_admin_kva_mapping_push(FemuCtrl *n, NvmeCmd *cmd)
     wb->gate_waiting_kva_push = false;
     wb->wb_enabled = true;
 
-    femu_log("WB 0xd0 accepted: seq=%u chunks=%u map_ready=1 wb_enabled=1\n",
+    femu_log("WB 0xd1 accepted: seq=%u chunks=%u map_ready=1 wb_enabled=1\n",
              seq_num, chunk_count);
 
     g_free(entries);
@@ -986,12 +986,12 @@ uint16_t femu_wb_io_notify_copy_done(FemuCtrl *n, NvmeCmd *cmd,
     FemuWbLocal *l;
     FemuWbCmdTrack *track;
 
-    if (!wb_parse_notify_args(n, cmd, req, &args, "WB 0xd1")) {
+    if (!wb_parse_notify_args(n, cmd, req, &args, "WB 0xd5")) {
         return NVME_SUCCESS;
     }
 
     if (!n->wb.wb_enabled) {
-        femu_log("WB 0xd1 ignored: wb_enabled=0 qid=%u cmd_id=%u seg_cnt=%u\n",
+        femu_log("WB 0xd5 ignored: wb_enabled=0 qid=%u cmd_id=%u seg_cnt=%u\n",
                  args.qid, args.cmd_id, args.seg_cnt);
         req->status = NVME_SUCCESS;
         return NVME_SUCCESS;
@@ -1003,7 +1003,7 @@ uint16_t femu_wb_io_notify_copy_done(FemuCtrl *n, NvmeCmd *cmd,
     track = wb_lookup_cmd_track_locked(l, args.cmd_id);
     if (!track || track->type != FEMU_WB_CMD_TRACK_WRITE) {
         qemu_mutex_unlock(&l->lpn_index_lock);
-        femu_log("WB 0xd1 COPY_DONE: no pending write cmd_id=%u on qid=%u\n",
+        femu_log("WB 0xd5 COPY_DONE: no pending write cmd_id=%u on qid=%u\n",
                  args.cmd_id, args.qid);
         req->status = NVME_SUCCESS;
         return NVME_SUCCESS;
@@ -1031,7 +1031,7 @@ uint16_t femu_wb_io_notify_copy_done(FemuCtrl *n, NvmeCmd *cmd,
         old = femu_rb_find(&l->lpn_index, seg->lpn);
         if (old) {
             if (femu_rb_refcnt_read(old) != 0) {
-                femu_log("WB 0xd1: keep old LPN=%" PRIu64 " due refcnt=%d\n",
+                femu_log("WB 0xd5: keep old LPN=%" PRIu64 " due refcnt=%d\n",
                          seg->lpn, femu_rb_refcnt_read(old));
                 seg->indexed = false;
             } else {
@@ -1070,7 +1070,7 @@ uint16_t femu_wb_io_notify_copy_done(FemuCtrl *n, NvmeCmd *cmd,
 
     n->wb.copy_done_notify_cnt++;
 
-    femu_log("WB 0xd1 COPY_DONE: qid=%u cmd_id=%u seg_cnt=%u\n",
+    femu_log("WB 0xd5 COPY_DONE: qid=%u cmd_id=%u seg_cnt=%u\n",
              args.qid, args.cmd_id, args.seg_cnt);
     req->status = NVME_SUCCESS;
     return NVME_SUCCESS;
@@ -1083,12 +1083,12 @@ uint16_t femu_wb_io_notify_read_done(FemuCtrl *n, NvmeCmd *cmd,
     FemuWbLocal *l;
     FemuWbCmdTrack *track;
 
-    if (!wb_parse_notify_args(n, cmd, req, &args, "WB 0xd2")) {
+    if (!wb_parse_notify_args(n, cmd, req, &args, "WB 0xd9")) {
         return NVME_SUCCESS;
     }
 
     if (!n->wb.wb_enabled) {
-        femu_log("WB 0xd2 ignored: wb_enabled=0 qid=%u cmd_id=%u seg_cnt=%u\n",
+        femu_log("WB 0xd9 ignored: wb_enabled=0 qid=%u cmd_id=%u seg_cnt=%u\n",
                  args.qid, args.cmd_id, args.seg_cnt);
         req->status = NVME_SUCCESS;
         return NVME_SUCCESS;
@@ -1142,7 +1142,7 @@ uint16_t femu_wb_io_notify_read_done(FemuCtrl *n, NvmeCmd *cmd,
 
     n->wb.read_done_notify_cnt++;
 
-    femu_log("WB 0xd2 READ_DONE: qid=%u cmd_id=%u seg_cnt=%u\n",
+    femu_log("WB 0xd9 READ_DONE: qid=%u cmd_id=%u seg_cnt=%u\n",
              args.qid, args.cmd_id, args.seg_cnt);
     req->status = NVME_SUCCESS;
     return NVME_SUCCESS;
@@ -1281,7 +1281,7 @@ bool femu_wb_init_layout(FemuCtrl *n)
              n->nr_io_queues,
              wb->mcp_entries_per_q,
              wb->mcp_entry_bytes);
-    femu_log("WB capability gate: waiting for vendor admin 0xd0 before wb_enabled=true\n");
+    femu_log("WB capability gate: waiting for vendor admin 0xd1 before wb_enabled=true\n");
 
     return true;
 }
