@@ -27,5 +27,7 @@ uint32_t femu_wb_stage_read_hits(struct ssd *ssd, NvmeRequest *req,
 								 uint32_t secsz, uint32_t secs_per_pg);
 void femu_wb_note_queue_activity(FemuCtrl *n, uint16_t qid);
 bool femu_wb_consume_flush_hint(FemuCtrl *n, uint16_t qid);
+bool femu_wb_trim_try_reclaim_lpn(struct ssd *ssd, uint64_t lpn);
+void femu_wb_trim_on_lpn_write(struct ssd *ssd, uint64_t lpn);
 
 #endif

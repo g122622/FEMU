@@ -999,6 +999,8 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
     }
 
     for (lpn = start_lpn; lpn <= end_lpn; lpn++) {
+        femu_wb_trim_on_lpn_write(ssd, lpn);
+
         ppa = get_maptbl_ent_with_lat(ssd, lpn, &meta_lat_sum);
         if (mapped_ppa(&ppa)) {
             /* update old page information first */
@@ -1033,17 +1035,14 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
 
 static uint64_t ssd_trim(struct ssd *ssd, NvmeRequest *req)
 {
-    // 输出error：目前暂不支持trim
-    ftl_err("TRIM command is currently not supported due to write buffer.\n");
-
     struct ssdparams *spp = &ssd->sp;
     NvmeDsmRange *ranges = req->dsm_ranges;
     int nr_ranges = req->dsm_nr_ranges;
-    // uint32_t attributes = req->dsm_attributes;
-    
+
     int total_trimmed_pages = 0;
     int total_already_invalid = 0;
     int total_out_of_bounds = 0;
+    int total_wb_busy_skipped = 0;
     
     if (!ranges || nr_ranges <= 0) {
         printf("TRIM: Invalid ranges or count\n");
@@ -1063,6 +1062,7 @@ static uint64_t ssd_trim(struct ssd *ssd, NvmeRequest *req)
         struct ppa ppa;
         int trimmed_pages = 0;
         int already_invalid = 0;
+        int wb_busy_skipped = 0;
 
         // ftl_debug("TRIM Range %d: LBA %lu + %u sectors, LPN range %lu-%lu (%lu pages), cattr=0x%x\n", 
         //        range_idx, slba, nlb, start_lpn, end_lpn, end_lpn - start_lpn + 1, cattr);
@@ -1077,8 +1077,15 @@ static uint64_t ssd_trim(struct ssd *ssd, NvmeRequest *req)
 
         // Process each LPN in this range
         for (lpn = start_lpn; lpn <= end_lpn; lpn++) {
+            bool safe_reclaim = femu_wb_trim_try_reclaim_lpn(ssd, lpn);
+
+            if (!safe_reclaim) {
+                wb_busy_skipped++;
+                continue;
+            }
+
             ppa = get_maptbl_ent(ssd, lpn);
-            
+
             // Skip already unmapped/invalid pages
             if (!mapped_ppa(&ppa) || !valid_ppa(ssd, &ppa)) {
                 already_invalid++;
@@ -1100,10 +1107,15 @@ static uint64_t ssd_trim(struct ssd *ssd, NvmeRequest *req)
         
         total_trimmed_pages += trimmed_pages;
         total_already_invalid += already_invalid;
+        total_wb_busy_skipped += wb_busy_skipped;
         
         // ftl_debug("TRIM Range %d: %d pages trimmed, %d already invalid\n", 
         //        range_idx, trimmed_pages, already_invalid);
     }
+
+    ftl_log("TRIM: pages_trimmed=%d already_invalid=%d out_of_bounds=%d wb_busy_skipped=%d ranges=%d\n",
+            total_trimmed_pages, total_already_invalid, total_out_of_bounds,
+            total_wb_busy_skipped, nr_ranges);
 
     // ftl_debug("TRIM: Completed - %d pages trimmed, %d already invalid, %d out of bounds across %d ranges\n", 
     //        total_trimmed_pages, total_already_invalid, total_out_of_bounds, nr_ranges);

@@ -32,6 +32,46 @@ static void wb_free_seg(FemuWbSeg *seg)
     g_free(seg);
 }
 
+static bool wb_lpn_tombstoned_locked(FemuWbLocal *l, uint64_t lpn)
+{
+    return l->trim_tombstones && g_hash_table_lookup(l->trim_tombstones, &lpn);
+}
+
+static bool wb_set_trim_tombstone_locked(FemuWbLocal *l, uint64_t lpn)
+{
+    uint64_t *key;
+
+    if (!l->trim_tombstones) {
+        l->trim_tombstones = g_hash_table_new_full(g_int64_hash, g_int64_equal,
+                                                   g_free, NULL);
+        if (!l->trim_tombstones) {
+            return false;
+        }
+    }
+
+    if (g_hash_table_lookup(l->trim_tombstones, &lpn)) {
+        return true;
+    }
+
+    key = g_malloc(sizeof(*key));
+    if (!key) {
+        return false;
+    }
+    *key = lpn;
+    g_hash_table_insert(l->trim_tombstones, key, GINT_TO_POINTER(1));
+    l->trim_tombstone_cnt++;
+    return true;
+}
+
+static void wb_clear_trim_tombstone_locked(FemuWbLocal *l, uint64_t lpn)
+{
+    if (!l->trim_tombstones) {
+        return;
+    }
+
+    g_hash_table_remove(l->trim_tombstones, &lpn);
+}
+
 static inline uint64_t wb_align_up(uint64_t v, uint64_t a)
 {
     return ((v + a - 1) / a) * a;
@@ -396,6 +436,11 @@ void femu_wb_ctrl_reset(FemuCtrl *n)
                     l->cmd_track_map = NULL;
                 }
 
+                if (l->trim_tombstones) {
+                    g_hash_table_destroy(l->trim_tombstones);
+                    l->trim_tombstones = NULL;
+                }
+
                 QTAILQ_FOREACH_SAFE(seg, &l->flush_q, entry, next) {
                     QTAILQ_REMOVE(&l->flush_q, seg, entry);
                     wb_free_seg(seg);
@@ -592,6 +637,8 @@ bool femu_wb_stage_write_req(struct ssd *ssd, NvmeRequest *req,
             goto rollback;
         }
 
+        wb_clear_trim_tombstone_locked(l, lpn);
+
         seg->alloc_seq = ++l->alloc_seq;
         seg->lpn = lpn;
         seg->slba = ov_start;
@@ -604,6 +651,7 @@ bool femu_wb_stage_write_req(struct ssd *ssd, NvmeRequest *req,
         seg->cmd_id = cmd_id;
         seg->qid = qid;
         seg->state = FEMU_WB_SEG_STAGED;
+        seg->trimmed = false;
         seg->indexed = false;
         seg->rbn = NULL;
         track->segs[i] = seg;
@@ -703,7 +751,8 @@ uint32_t femu_wb_stage_read_hits(struct ssd *ssd, NvmeRequest *req,
     for (uint64_t lpn = start_lpn; lpn <= end_lpn; lpn++) {
         FemuRbNode *node = femu_rb_find(&l->lpn_index, lpn);
 
-        if (!node || node->state < FEMU_WB_SEG_COPY_DONE || !node->priv) {
+        if (wb_lpn_tombstoned_locked(l, lpn) ||
+            !node || node->state != FEMU_WB_SEG_COPY_DONE || !node->priv) {
             continue;
         }
 
@@ -752,7 +801,8 @@ uint32_t femu_wb_stage_read_hits(struct ssd *ssd, NvmeRequest *req,
         uint64_t delta_secs;
         FemuMcpEntry me;
 
-        if (!node || node->state < FEMU_WB_SEG_COPY_DONE || !node->priv) {
+        if (wb_lpn_tombstoned_locked(l, lpn) ||
+            !node || node->state != FEMU_WB_SEG_COPY_DONE || !node->priv) {
             continue;
         }
 
@@ -1042,6 +1092,16 @@ uint16_t femu_wb_io_notify_copy_done(FemuCtrl *n, NvmeCmd *cmd,
             continue;
         }
 
+        // 为了保证trim命令正确性，
+        // 0xd5 COPY_DONE 对 tombstone/trimmed 段不再镜像 backend、不再入索引，仅回收空间
+        if (seg->trimmed || wb_lpn_tombstoned_locked(l, seg->lpn)) {
+            seg->state = FEMU_WB_SEG_FLUSHED;
+            seg->indexed = false;
+            seg->rbn = NULL;
+            wb_flush_q_insert_sorted_locked(l, seg);
+            continue;
+        }
+
         if (!wb_sync_seg_to_backend(n, seg)) {
             femu_err("WB 0xd5: mirror-to-backend failed qid=%u cmd_id=%u lpn=%" PRIu64
                      " off=0x%" PRIx64 " len=%u\n",
@@ -1150,7 +1210,8 @@ uint16_t femu_wb_io_notify_read_done(FemuCtrl *n, NvmeCmd *cmd,
             new_ref = 0;
         }
 
-        if (seg->state == FEMU_WB_SEG_FLUSHED && new_ref == 0 && seg->indexed) {
+        if ((seg->state == FEMU_WB_SEG_FLUSHED || seg->trimmed) &&
+            new_ref == 0 && seg->indexed) {
             femu_rb_remove(&l->lpn_index, node);
             seg->indexed = false;
             seg->rbn = NULL;
@@ -1270,6 +1331,8 @@ bool femu_wb_init_layout(FemuCtrl *n)
         l->alloc_seq = 0;
         l->cmd_track_map = g_hash_table_new_full(g_int_hash, g_int_equal,
                              g_free, wb_free_cmd_track);
+        l->trim_tombstones = g_hash_table_new_full(g_int64_hash, g_int64_equal,
+                               g_free, NULL);
 
         assert(l->mcp_tail < l->mcp_capacity);
         assert(l->used <= l->wb_bytes);
@@ -1306,6 +1369,101 @@ bool femu_wb_init_layout(FemuCtrl *n)
     femu_log("WB capability gate: waiting for vendor admin 0xd1 before wb_enabled=true\n");
 
     return true;
+}
+
+// TRIM 安全回收接口
+bool femu_wb_trim_try_reclaim_lpn(struct ssd *ssd, uint64_t lpn)
+{
+    FemuCtrl *n = ssd->n;
+    bool safe = true;
+
+    if (!n->wb.layout_ready || !n->wb.wb_enabled || !n->wb.locals) {
+        return true;
+    }
+
+    for (uint16_t qid = 1; qid <= n->wb.nr_queues; qid++) {
+        FemuWbLocal *l = &n->wb.locals[qid];
+        FemuRbNode *node;
+        FemuWbSeg *seg;
+        GHashTableIter iter;
+        gpointer key, value;
+
+        qemu_mutex_lock(&l->lpn_index_lock);
+
+        node = femu_rb_find(&l->lpn_index, lpn);
+        if (node && node->priv) {
+            seg = node->priv;
+            bool had_tomb = wb_lpn_tombstoned_locked(l, lpn);
+            seg->trimmed = true;
+            seg->state = FEMU_WB_SEG_FLUSHED;
+
+            if (femu_rb_refcnt_read(node) == 0) {
+                femu_rb_remove(&l->lpn_index, node);
+                seg->indexed = false;
+                seg->rbn = NULL;
+                g_free(node);
+                l->trim_safe_reclaim_cnt++;
+                n->wb.trim_safe_reclaim_cnt++;
+            } else {
+                safe = false;
+                l->trim_skip_busy_cnt++;
+                n->wb.trim_skip_busy_cnt++;
+            }
+
+            if (!wb_set_trim_tombstone_locked(l, lpn)) {
+                safe = false;
+            } else if (!had_tomb) {
+                n->wb.trim_tombstone_cnt++;
+            }
+        }
+
+        if (l->cmd_track_map) {
+            g_hash_table_iter_init(&iter, l->cmd_track_map);
+            while (g_hash_table_iter_next(&iter, &key, &value)) {
+                FemuWbCmdTrack *track = value;
+
+                if (!track || track->type != FEMU_WB_CMD_TRACK_WRITE ||
+                    !track->segs) {
+                    continue;
+                }
+
+                for (uint32_t i = 0; i < track->seg_cnt; i++) {
+                    if (track->segs[i] && track->segs[i]->lpn == lpn) {
+                        bool had_tomb = wb_lpn_tombstoned_locked(l, lpn);
+                        track->segs[i]->trimmed = true;
+                        if (!wb_set_trim_tombstone_locked(l, lpn)) {
+                            safe = false;
+                        } else if (!had_tomb) {
+                            n->wb.trim_tombstone_cnt++;
+                        }
+                    }
+                }
+            }
+        }
+
+        wb_try_reclaim_head_locked(l);
+        qemu_mutex_unlock(&l->lpn_index_lock);
+    }
+
+    return safe;
+}
+
+// 写入清 tombstone 接口
+void femu_wb_trim_on_lpn_write(struct ssd *ssd, uint64_t lpn)
+{
+    FemuCtrl *n = ssd->n;
+
+    if (!n->wb.layout_ready || !n->wb.locals) {
+        return;
+    }
+
+    for (uint16_t qid = 1; qid <= n->wb.nr_queues; qid++) {
+        FemuWbLocal *l = &n->wb.locals[qid];
+
+        qemu_mutex_lock(&l->lpn_index_lock);
+        wb_clear_trim_tombstone_locked(l, lpn);
+        qemu_mutex_unlock(&l->lpn_index_lock);
+    }
 }
 
 static void *femu_wb_flush_monitor_thread(void *opaque)

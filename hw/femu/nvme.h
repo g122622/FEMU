@@ -935,6 +935,7 @@ typedef struct FemuWbSeg {
     uint16_t qid;
 
     uint8_t state;
+    bool trimmed;
     bool indexed;
     FemuRbNode *rbn;
 } FemuWbSeg;
@@ -970,6 +971,7 @@ typedef struct FemuWbLocal {
     bool lpn_index_lock_inited;
 
     GHashTable *cmd_track_map;
+    GHashTable *trim_tombstones;
     union FemuWbSegQ flush_q;
     uint64_t alloc_seq;
 
@@ -984,6 +986,9 @@ typedef struct FemuWbLocal {
     uint64_t flush_bytes;
     uint64_t mcp_full_cnt;
     uint64_t fallback_cnt;
+    uint64_t trim_tombstone_cnt;
+    uint64_t trim_safe_reclaim_cnt;
+    uint64_t trim_skip_busy_cnt;
 } FemuWbLocal;
 
 typedef struct FemuWriteBuffer {
@@ -1015,6 +1020,9 @@ typedef struct FemuWriteBuffer {
     uint64_t flush_bytes;
     uint64_t mcp_full_cnt;
     uint64_t fallback_cnt;
+    uint64_t trim_tombstone_cnt;
+    uint64_t trim_safe_reclaim_cnt;
+    uint64_t trim_skip_busy_cnt;
 
     QemuThread flush_thread;
     bool flush_thread_started;
