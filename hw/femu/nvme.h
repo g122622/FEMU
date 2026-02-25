@@ -1345,6 +1345,29 @@ typedef struct FemuCtrl {
     uint64_t        dbs_addr_hva;
     uint64_t        eis_addr_hva;
 
+    /* Experiment/runtime knobs (compile-time defaults from common config headers) */
+    uint8_t         exp_enable_hmb;
+    uint8_t         exp_enable_l2p_multilevel;
+    uint8_t         exp_enable_wb;
+    uint8_t         l2p_bypass_meta_mode;
+
+    uint32_t        cfg_hmb_hmmin_mb;
+    uint32_t        cfg_hmb_hmpre_mb;
+
+    uint32_t        cfg_l2p_l1_size_kb;
+    uint32_t        cfg_l2p_l2_size_kb;
+    uint32_t        cfg_l2p_pt_page_size;
+    uint64_t        cfg_l2p_l1_rd_lat_ns;
+    uint64_t        cfg_l2p_l1_wr_lat_ns;
+    uint64_t        cfg_l2p_l2_rd_lat_ns;
+    uint64_t        cfg_l2p_l2_wr_lat_ns;
+    uint64_t        cfg_l2p_l3_rd_lat_mul;
+    uint64_t        cfg_l2p_l3_wr_lat_mul;
+
+    uint32_t        cfg_wb_mcp_entries_per_q;
+    uint32_t        cfg_wb_flush_watermark_pct;
+    uint32_t        cfg_wb_idle_rounds_default;
+
     bool            hmb_enabled;
     uint32_t        hmb_hsize;
     uint64_t        hmb_size_bytes;

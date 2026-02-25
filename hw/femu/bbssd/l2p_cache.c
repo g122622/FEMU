@@ -3,6 +3,38 @@
 
 #define FEMU_L2P_STATS_LOG_PERIOD_NS      (5ULL * 1000 * 1000 * 1000)
 
+static inline uint32_t l2p_cfg_pt_page_size(struct ssd *ssd)
+{
+    return ssd->n->cfg_l2p_pt_page_size;
+}
+
+static inline uint32_t l2p_cfg_l1_size_kb(struct ssd *ssd)
+{
+    return ssd->n->cfg_l2p_l1_size_kb;
+}
+
+static inline uint32_t l2p_cfg_l2_size_kb(struct ssd *ssd)
+{
+    return ssd->n->cfg_l2p_l2_size_kb;
+}
+
+static inline bool l2p_multilevel_enabled(struct ssd *ssd)
+{
+    return ssd->n->exp_enable_l2p_multilevel;
+}
+
+static inline uint64_t l2p_bypass_read_lat(struct ssd *ssd)
+{
+    return (ssd->n->l2p_bypass_meta_mode == FEMU_L2P_BYPASS_META_L3) ?
+           ssd->l2p_lat.l3_rd_lat : 0;
+}
+
+static inline uint64_t l2p_bypass_write_lat(struct ssd *ssd)
+{
+    return (ssd->n->l2p_bypass_meta_mode == FEMU_L2P_BYPASS_META_L3) ?
+           ssd->l2p_lat.l3_wr_lat : 0;
+}
+
 static inline uint64_t l2p_get_ptid(struct ssd *ssd, uint64_t lpn)
 {
     return lpn / ssd->l2p_l1.ents_per_page;
@@ -124,15 +156,17 @@ static inline void set_maptbl_ent_raw(struct ssd *ssd, uint64_t lpn,
 static inline bool l2p_l2_slot_read_page(struct ssd *ssd, int32_t slot,
                                          struct ppa *dst)
 {
-    uint64_t off = (uint64_t)slot * FEMU_L2P_PT_PAGE_SIZE;
-    return femu_hmb_rw(ssd->n, off, dst, FEMU_L2P_PT_PAGE_SIZE, false);
+    uint32_t page_sz = l2p_cfg_pt_page_size(ssd);
+    uint64_t off = (uint64_t)slot * page_sz;
+    return femu_hmb_rw(ssd->n, off, dst, page_sz, false);
 }
 
 static inline bool l2p_l2_slot_write_page(struct ssd *ssd, int32_t slot,
                                           struct ppa *src)
 {
-    uint64_t off = (uint64_t)slot * FEMU_L2P_PT_PAGE_SIZE;
-    return femu_hmb_rw(ssd->n, off, src, FEMU_L2P_PT_PAGE_SIZE, true);
+    uint32_t page_sz = l2p_cfg_pt_page_size(ssd);
+    uint64_t off = (uint64_t)slot * page_sz;
+    return femu_hmb_rw(ssd->n, off, src, page_sz, true);
 }
 
 static int32_t l2p_find_l1_slot(struct ssd *ssd, uint64_t ptid)
@@ -165,7 +199,7 @@ static void l2p_l1_install_page(struct ssd *ssd, uint64_t ptid,
         ssd->l2p_l1.evicts++;
     }
 
-    memcpy(l1_slot_base(ssd, victim), src_page, FEMU_L2P_PT_PAGE_SIZE);
+    memcpy(l1_slot_base(ssd, victim), src_page, ssd->l2p_l1.page_size);
 
     ssd->l2p_l1.meta[victim].tag = ptid;
     ssd->l2p_l1.meta[victim].valid = 1;
@@ -224,9 +258,13 @@ static struct ppa get_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
     uint64_t ptid;
     uint32_t ptoff;
     int32_t slot;
-    struct ppa page_buf[FEMU_L2P_PT_PAGE_SIZE / sizeof(struct ppa)];
+    struct ppa ret;
+    struct ppa *page_buf;
 
     ftl_assert(lpn < ssd->sp.tt_pgs);
+    page_buf = g_malloc0(ssd->l2p_l1.page_size);
+    ftl_assert(page_buf);
+
     ptid = l2p_get_ptid(ssd, lpn);
     ptoff = l2p_get_ptoff(ssd, lpn);
 
@@ -239,7 +277,9 @@ static struct ppa get_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
         l2p_get_algo_ops(ssd->l2p_l1.algo)->touch(ssd->l2p_l1.meta,
                 &ssd->l2p_l1.lru_head, &ssd->l2p_l1.lru_tail, slot);
         ssd->l2p_l1.hits++;
-        return l1_slot_base(ssd, slot)[ptoff];
+        ret = l1_slot_base(ssd, slot)[ptoff];
+        g_free(page_buf);
+        return ret;
     }
 
     ssd->l2p_l1.misses++;
@@ -256,7 +296,9 @@ static struct ppa get_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
                 &l2->lru_tail, slot);
         l2->hits++;
         l2p_l1_install_page(ssd, ptid, page_buf, meta_lat, account_lat);
-        return page_buf[ptoff];
+        ret = page_buf[ptoff];
+        g_free(page_buf);
+        return ret;
     }
 
     ssd->n->l2p_l2.misses++;
@@ -267,7 +309,9 @@ static struct ppa get_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
     l2p_l2_install_page(ssd, ptid, page_buf, meta_lat, account_lat);
     l2p_l1_install_page(ssd, ptid, page_buf, meta_lat, account_lat);
 
-    return page_buf[ptoff];
+    ret = page_buf[ptoff];
+    g_free(page_buf);
+    return ret;
 }
 
 static uint64_t set_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
@@ -278,9 +322,11 @@ static uint64_t set_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
     uint64_t maxlat = account_lat ? ssd->l2p_lat.l3_wr_lat : 0;
     int32_t l1_slot = l2p_find_l1_slot(ssd, ptid);
     int32_t l2_slot = l2p_find_l2_slot(ssd, ptid);
-    struct ppa page_buf[FEMU_L2P_PT_PAGE_SIZE / sizeof(struct ppa)];
+    struct ppa *page_buf;
 
     ftl_assert(lpn < ssd->sp.tt_pgs);
+    page_buf = g_malloc0(ssd->l2p_l1.page_size);
+    ftl_assert(page_buf);
 
     if (l2_slot < 0) {
         l3_copy_pt_page_from_maptbl(ssd, ptid, page_buf);
@@ -320,19 +366,24 @@ static uint64_t set_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
     l2p_get_algo_ops(ssd->n->l2p_l2.algo)->touch(ssd->n->l2p_l2.meta,
             &ssd->n->l2p_l2.lru_head, &ssd->n->l2p_l2.lru_tail, l2_slot);
 
+    g_free(page_buf);
+
     return maxlat;
 }
 
 void femu_l2p_init_latency(struct ssd *ssd)
 {
     struct ssdparams *spp = &ssd->sp;
+    FemuCtrl *n = ssd->n;
 
-    ssd->l2p_lat.l1_rd_lat = FEMU_L2P_L1_RD_LAT_NS;
-    ssd->l2p_lat.l1_wr_lat = FEMU_L2P_L1_WR_LAT_NS;
-    ssd->l2p_lat.l2_rd_lat = FEMU_L2P_L2_RD_LAT_NS;
-    ssd->l2p_lat.l2_wr_lat = FEMU_L2P_L2_WR_LAT_NS;
-    ssd->l2p_lat.l3_rd_lat = MAX(1ULL, (uint64_t)spp->pg_rd_lat * FEMU_L2P_L3_RD_LAT_MUL);
-    ssd->l2p_lat.l3_wr_lat = MAX(1ULL, (uint64_t)spp->pg_wr_lat * FEMU_L2P_L3_WR_LAT_MUL);
+    ssd->l2p_lat.l1_rd_lat = n->cfg_l2p_l1_rd_lat_ns;
+    ssd->l2p_lat.l1_wr_lat = n->cfg_l2p_l1_wr_lat_ns;
+    ssd->l2p_lat.l2_rd_lat = n->cfg_l2p_l2_rd_lat_ns;
+    ssd->l2p_lat.l2_wr_lat = n->cfg_l2p_l2_wr_lat_ns;
+    ssd->l2p_lat.l3_rd_lat = MAX(1ULL,
+        (uint64_t)spp->pg_rd_lat * n->cfg_l2p_l3_rd_lat_mul);
+    ssd->l2p_lat.l3_wr_lat = MAX(1ULL,
+        (uint64_t)spp->pg_wr_lat * n->cfg_l2p_l3_wr_lat_mul);
 
     ftl_log("L2P latency(ns): L1(rd=%" PRIu64 ",wr=%" PRIu64 ") L2(rd=%" PRIu64
             ",wr=%" PRIu64 ") L3(rd=%" PRIu64 ",wr=%" PRIu64 ")\n",
@@ -356,7 +407,7 @@ void femu_l2p_log_latency_config(struct ssd *ssd)
 
     ftl_log("L2P cache size: L1=%uKB, L2(target HMB)=%uKB, "
             "L3(maptbl)=%" PRIu64 " bytes (%" PRIu64 " KiB)\n",
-            FEMU_L2P_L1_SIZE_KB, FEMU_L2P_L2_SIZE_KB,
+            l2p_cfg_l1_size_kb(ssd), l2p_cfg_l2_size_kb(ssd),
             l3_maptbl_bytes, l3_maptbl_bytes / 1024);
 }
 
@@ -424,15 +475,16 @@ void femu_l2p_maybe_log_stats(struct ssd *ssd)
 
 void femu_l2p_init_l1_cache(struct ssd *ssd)
 {
-    uint32_t ents_per_page = FEMU_L2P_PT_PAGE_SIZE / sizeof(struct ppa);
-    uint32_t nr_slots = (FEMU_L2P_L1_SIZE_KB * 1024) / FEMU_L2P_PT_PAGE_SIZE;
+    uint32_t page_sz = l2p_cfg_pt_page_size(ssd);
+    uint32_t ents_per_page = page_sz / sizeof(struct ppa);
+    uint32_t nr_slots = (l2p_cfg_l1_size_kb(ssd) * 1024) / page_sz;
 
-    ftl_assert(FEMU_L2P_PT_PAGE_SIZE % sizeof(struct ppa) == 0);
+    ftl_assert(page_sz % sizeof(struct ppa) == 0);
     ftl_assert(nr_slots > 0);
 
     ssd->l2p_l1.initialized = true;
     ssd->l2p_l1.algo = FEMU_L2P_CACHE_ALGO_DEFAULT;
-    ssd->l2p_l1.page_size = FEMU_L2P_PT_PAGE_SIZE;
+    ssd->l2p_l1.page_size = page_sz;
     ssd->l2p_l1.ents_per_page = ents_per_page;
     ssd->l2p_l1.nr_slots = nr_slots;
     ssd->l2p_l1.used_slots = 0;
@@ -454,7 +506,7 @@ void femu_l2p_init_l1_cache(struct ssd *ssd)
     }
 
     ftl_log("L2P L1 cache ready: size=%uKB slots=%u entries/page=%u entry-bytes=%zu\n",
-            FEMU_L2P_L1_SIZE_KB, nr_slots, ents_per_page, sizeof(struct ppa));
+            l2p_cfg_l1_size_kb(ssd), nr_slots, ents_per_page, sizeof(struct ppa));
 }
 
 static bool ssd_try_init_l2p_l2_cache(struct ssd *ssd)
@@ -462,6 +514,8 @@ static bool ssd_try_init_l2p_l2_cache(struct ssd *ssd)
     FemuCtrl *n = ssd->n;
     FemuL2pL2Cache *l2 = &n->l2p_l2;
     uint32_t wanted_slots;
+    uint32_t page_sz = l2p_cfg_pt_page_size(ssd);
+    uint32_t l2_size_kb = l2p_cfg_l2_size_kb(ssd);
 
     if (l2->initialized) {
         return true;
@@ -473,19 +527,19 @@ static bool ssd_try_init_l2p_l2_cache(struct ssd *ssd)
 
     uint64_t hmb_total = femu_hmb_total_bytes(n);
 
-    if (hmb_total < (uint64_t)FEMU_L2P_L2_SIZE_KB * 1024) {
+    if (hmb_total < (uint64_t)l2_size_kb * 1024) {
         ftl_err("HMB too small for L2 cache: have=%" PRIu64 " want=%u\n",
-                hmb_total, FEMU_L2P_L2_SIZE_KB * 1024);
+                hmb_total, l2_size_kb * 1024);
         return false;
     }
 
-    wanted_slots = (FEMU_L2P_L2_SIZE_KB * 1024) / FEMU_L2P_PT_PAGE_SIZE;
+    wanted_slots = (l2_size_kb * 1024) / page_sz;
     ftl_assert(wanted_slots > 0);
 
     l2->initialized = true;
     l2->algo = FEMU_L2P_CACHE_ALGO_DEFAULT;
-    l2->page_size = FEMU_L2P_PT_PAGE_SIZE;
-    l2->ents_per_page = FEMU_L2P_PT_PAGE_SIZE / sizeof(struct ppa);
+    l2->page_size = page_sz;
+    l2->ents_per_page = page_sz / sizeof(struct ppa);
     l2->nr_slots = wanted_slots;
     l2->used_slots = 0;
     l2->lru_head = -1;
@@ -504,7 +558,7 @@ static bool ssd_try_init_l2p_l2_cache(struct ssd *ssd)
 
     ftl_log("L2P L2 cache ready on HMB: size=%uKB slots=%u hmb_bytes=%" PRIu64
             " descs=%u\n",
-            FEMU_L2P_L2_SIZE_KB, l2->nr_slots, l2->hmb_total_bytes,
+            l2_size_kb, l2->nr_slots, l2->hmb_total_bytes,
             n->hmb_desc_count);
 
     return true;
@@ -512,6 +566,11 @@ static bool ssd_try_init_l2p_l2_cache(struct ssd *ssd)
 
 bool femu_l2p_prepare(struct ssd *ssd)
 {
+    if (!l2p_multilevel_enabled(ssd)) {
+        ssd->l2p_cache_ready = false;
+        return true;
+    }
+
     if (ssd->l2p_cache_ready && ssd->n->l2p_l2.initialized) {
         return true;
     }
@@ -549,7 +608,13 @@ struct ppa femu_l2p_get_maptbl_ent(struct ssd *ssd, uint64_t lpn)
 struct ppa femu_l2p_get_maptbl_ent_with_lat(struct ssd *ssd, uint64_t lpn,
                                             uint64_t *meta_lat)
 {
-    ftl_assert(ssd->l2p_cache_ready);
+    if (!ssd->l2p_cache_ready) {
+        if (meta_lat) {
+            *meta_lat += l2p_bypass_read_lat(ssd);
+        }
+        return ssd->maptbl[lpn];
+    }
+
     return get_maptbl_ent_internal(ssd, lpn, meta_lat, true);
 }
 
@@ -566,7 +631,11 @@ void femu_l2p_set_maptbl_ent(struct ssd *ssd, uint64_t lpn, struct ppa *ppa)
 uint64_t femu_l2p_set_maptbl_ent_with_lat(struct ssd *ssd, uint64_t lpn,
                                           struct ppa *ppa)
 {
-    ftl_assert(ssd->l2p_cache_ready);
+    if (!ssd->l2p_cache_ready) {
+        set_maptbl_ent_raw(ssd, lpn, ppa);
+        return l2p_bypass_write_lat(ssd);
+    }
+
     return set_maptbl_ent_internal(ssd, lpn, ppa, true);
 }
 

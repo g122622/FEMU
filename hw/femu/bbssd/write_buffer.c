@@ -457,7 +457,7 @@ void femu_wb_ctrl_reset(FemuCtrl *n)
     femu_wb_kva_map_reset(wb);
 
     memset(wb, 0, sizeof(*wb));
-    wb->mcp_entries_per_q = FEMU_WB_MCP_ENTRIES_PER_Q;
+    wb->mcp_entries_per_q = n->cfg_wb_mcp_entries_per_q;
     wb->mcp_entry_bytes = FEMU_WB_MCP_ENTRY_BYTES;
     wb->gate_waiting_kva_push = true;
 }
@@ -506,7 +506,8 @@ bool femu_wb_gpa_to_kva(FemuCtrl *n, uint64_t gpa, uint64_t *kva_out,
 
 bool femu_wb_should_candidate_write(FemuCtrl *n)
 {
-    return n->wb.layout_ready && n->wb.wb_enabled && !n->wb.gate_waiting_kva_push;
+    return n->exp_enable_wb &&
+           n->wb.layout_ready && n->wb.wb_enabled && !n->wb.gate_waiting_kva_push;
 }
 
 bool femu_wb_stage_write_req(struct ssd *ssd, NvmeRequest *req,
@@ -931,6 +932,10 @@ uint16_t femu_wb_admin_kva_mapping_push(FemuCtrl *n, NvmeCmd *cmd)
     uint64_t prp2 = le64_to_cpu(cmd->dptr.prp2);
     FemuWbKvaPushEntry *entries = NULL;
 
+    if (!n->exp_enable_wb) {
+        return NVME_INVALID_OPCODE | NVME_DNR;
+    }
+
     if (!n->hmb_enabled || !wb->layout_ready || !wb->locals) {
         femu_err("WB 0xd1 reject: HMB/WB layout not ready (hmb_enabled=%d layout_ready=%d)\n",
                  n->hmb_enabled, wb->layout_ready);
@@ -1052,6 +1057,11 @@ uint16_t femu_wb_io_notify_copy_done(FemuCtrl *n, NvmeCmd *cmd,
     FemuWbLocal *l;
     FemuWbCmdTrack *track;
 
+    if (!n->exp_enable_wb) {
+        req->status = NVME_INVALID_OPCODE | NVME_DNR;
+        return req->status;
+    }
+
     if (!wb_parse_notify_args(n, cmd, req, &args, "WB 0xd5")) {
         return NVME_SUCCESS;
     }
@@ -1165,6 +1175,11 @@ uint16_t femu_wb_io_notify_read_done(FemuCtrl *n, NvmeCmd *cmd,
     FemuWbLocal *l;
     FemuWbCmdTrack *track;
 
+    if (!n->exp_enable_wb) {
+        req->status = NVME_INVALID_OPCODE | NVME_DNR;
+        return req->status;
+    }
+
     if (!wb_parse_notify_args(n, cmd, req, &args, "WB 0xd9")) {
         return NVME_SUCCESS;
     }
@@ -1235,7 +1250,8 @@ bool femu_wb_init_layout(FemuCtrl *n)
 {
     FemuWriteBuffer *wb = &n->wb;
     const uint64_t page_sz = FEMU_WB_ALIGN_BYTES;
-    const uint64_t l2_bytes = (uint64_t)FEMU_L2P_L2_SIZE_KB * 1024ULL;
+    const uint64_t l2_bytes = n->exp_enable_l2p_multilevel ?
+                              (uint64_t)n->cfg_l2p_l2_size_kb * 1024ULL : 0ULL;
     uint64_t l2_end = wb_align_up(l2_bytes, page_sz);
     uint64_t wb_total_pages;
     uint64_t wb_total_bytes;
@@ -1246,6 +1262,11 @@ bool femu_wb_init_layout(FemuCtrl *n)
     uint64_t cursor_pages = 0;
 
     femu_wb_ctrl_reset(n);
+
+    if (!n->exp_enable_wb) {
+        femu_wb_disable_with_reason(n, "WB disabled by exp_enable_wb=0");
+        return false;
+    }
 
     if (!n->hmb_enabled || !n->hmb_size_bytes) {
         femu_wb_disable_with_reason(n, "HMB is not enabled");
@@ -1275,7 +1296,7 @@ bool femu_wb_init_layout(FemuCtrl *n)
         return false;
     }
 
-    mcp_bytes_raw = (uint64_t)FEMU_WB_MCP_ENTRIES_PER_Q * FEMU_WB_MCP_ENTRY_BYTES;
+    mcp_bytes_raw = (uint64_t)n->cfg_wb_mcp_entries_per_q * FEMU_WB_MCP_ENTRY_BYTES;
     mcp_bytes_aligned = wb_align_up(mcp_bytes_raw, page_sz);
     mcp_pages = mcp_bytes_aligned / page_sz;
 
@@ -1289,7 +1310,7 @@ bool femu_wb_init_layout(FemuCtrl *n)
     wb->nr_queues = n->nr_io_queues;
     wb->hmb_wb_base = l2_end;
     wb->hmb_wb_bytes = wb_total_bytes;
-    wb->mcp_entries_per_q = FEMU_WB_MCP_ENTRIES_PER_Q;
+    wb->mcp_entries_per_q = n->cfg_wb_mcp_entries_per_q;
     wb->mcp_entry_bytes = FEMU_WB_MCP_ENTRY_BYTES;
 
     for (uint32_t qid = 1; qid <= n->nr_io_queues; qid++) {
@@ -1323,7 +1344,7 @@ bool femu_wb_init_layout(FemuCtrl *n)
         qemu_mutex_init(&l->lpn_index_lock);
         l->lpn_index_lock_inited = true;
         QTAILQ_INIT(&l->flush_q);
-        l->idle_rounds_threshold = FEMU_WB_IDLE_ROUNDS_DEFAULT;
+        l->idle_rounds_threshold = n->cfg_wb_idle_rounds_default;
         l->flush_hint = false;
         l->activity_seq = 0;
         l->monitor_seq = 0;
@@ -1490,10 +1511,10 @@ static void *femu_wb_flush_monitor_thread(void *opaque)
                 l->idle_rounds = 0;
             }
 
-            if (l->wb_bytes && l->used * 100ULL >= l->wb_bytes * FEMU_WB_FLUSH_WATERMARK_PCT) {
+            if (l->wb_bytes && l->used * 100ULL >=
+                l->wb_bytes * n->cfg_wb_flush_watermark_pct) {
                 kick = true;
             }
-
             if (l->used && l->idle_rounds >= l->idle_rounds_threshold) {
                 kick = true;
             }

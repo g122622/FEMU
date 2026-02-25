@@ -128,6 +128,11 @@ uint16_t femu_hmb_set_feature(FemuCtrl *n, NvmeCmd *cmd, NvmeCqe *cqe)
     uint64_t magic = cpu_to_le64(FEMU_HMB_TEST_MAGIC);
     uint64_t verify_magic = 0;
 
+    if (!n->exp_enable_hmb) {
+        femu_log("HMB Set Features rejected: exp_enable_hmb=0\n");
+        return NVME_INVALID_FIELD | NVME_DNR;
+    }
+
     if (save) {
         femu_log("HMB Set Features Save=1 is not supported\n");
         return NVME_FID_NOT_SAVEABLE | NVME_DNR;

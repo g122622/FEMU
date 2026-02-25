@@ -323,7 +323,21 @@ static int nvme_check_constraints(FemuCtrl *n)
         (n->mpsmax > 0xf || n->mpsmax > n->mpsmin) ||
         (n->oacs & ~(NVME_OACS_FORMAT)) ||
         (n->oncs & ~(NVME_ONCS_COMPARE | NVME_ONCS_WRITE_UNCORR |
-                     NVME_ONCS_DSM | NVME_ONCS_WRITE_ZEROS))) {
+                     NVME_ONCS_DSM | NVME_ONCS_WRITE_ZEROS)) ||
+        (n->exp_enable_hmb > 1) ||
+        (n->exp_enable_l2p_multilevel > 1) ||
+        (n->exp_enable_wb > 1) ||
+        (n->l2p_bypass_meta_mode > FEMU_L2P_BYPASS_META_L3) ||
+        (n->cfg_hmb_hmmin_mb == 0) ||
+        (n->cfg_hmb_hmpre_mb == 0) ||
+        (n->cfg_l2p_l1_size_kb == 0) ||
+        (n->cfg_l2p_l2_size_kb == 0) ||
+        (n->cfg_l2p_pt_page_size == 0) ||
+        (n->cfg_l2p_pt_page_size % sizeof(struct ppa) != 0) ||
+        (n->cfg_wb_mcp_entries_per_q == 0) ||
+        (n->cfg_wb_flush_watermark_pct == 0 ||
+         n->cfg_wb_flush_watermark_pct > 100) ||
+        (n->cfg_wb_idle_rounds_default == 0)) {
                          return -1;
      }
 
@@ -402,7 +416,14 @@ static void nvme_init_ctrl(FemuCtrl *n)
     NvmeIdCtrl *id = &n->id_ctrl;
     uint8_t *pci_conf = n->parent_obj.config;
     char *subnqn;
+    uint32_t hmmin_units;
+    uint32_t hmpre_units;
     int i;
+
+    hmmin_units = n->exp_enable_hmb ?
+        FEMU_HMB_MB_TO_4K_UNITS(n->cfg_hmb_hmmin_mb) : 0;
+    hmpre_units = n->exp_enable_hmb ?
+        FEMU_HMB_MB_TO_4K_UNITS(n->cfg_hmb_hmpre_mb) : 0;
 
     id->vid = cpu_to_le16(pci_get_word(pci_conf + PCI_VENDOR_ID));
     id->ssvid = cpu_to_le16(pci_get_word(pci_conf + PCI_SUBSYSTEM_VENDOR_ID));
@@ -422,8 +443,8 @@ static void nvme_init_ctrl(FemuCtrl *n)
     id->lpa          = NVME_LPA_NS_SMART | NVME_LPA_CSE | NVME_LPA_EXTENDED;
     id->elpe         = n->elpe;
     id->npss         = 0;
-    id->hmpre        = cpu_to_le32(FEMU_HMB_HMPRE_UNITS);
-    id->hmmin        = cpu_to_le32(FEMU_HMB_HMMIN_UNITS);
+    id->hmpre        = cpu_to_le32(hmpre_units);
+    id->hmmin        = cpu_to_le32(hmmin_units);
     id->sqes         = (n->max_sqes << 4) | 0x6;
     id->cqes         = (n->max_cqes << 4) | 0x4;
     id->nn           = cpu_to_le32(n->num_namespaces);
@@ -631,6 +652,47 @@ static const Property femu_props[] = {
     DEFINE_PROP_UINT32("devsz_mb", FemuCtrl, memsz, 1024), /* in MB */
     DEFINE_PROP_UINT32("namespaces", FemuCtrl, num_namespaces, 1),
     DEFINE_PROP_UINT32("queues", FemuCtrl, nr_io_queues, 4), // TODO 应该做一个host和controller协商的机制，必须确保二者的queue数量一致，否则MCP读写取会有大问题
+    DEFINE_PROP_UINT8("exp_enable_hmb", FemuCtrl, exp_enable_hmb,
+                      FEMU_EXP_ENABLE_HMB_DEFAULT),
+    DEFINE_PROP_UINT8("exp_enable_l2p_multilevel", FemuCtrl,
+                      exp_enable_l2p_multilevel,
+                      FEMU_EXP_ENABLE_L2P_MULTILEVEL_DEFAULT),
+    DEFINE_PROP_UINT8("exp_enable_wb", FemuCtrl, exp_enable_wb,
+                      FEMU_EXP_ENABLE_WB_DEFAULT),
+    DEFINE_PROP_UINT8("l2p_bypass_meta_mode", FemuCtrl,
+                      l2p_bypass_meta_mode,
+                      FEMU_L2P_BYPASS_META_MODE_DEFAULT),
+    DEFINE_PROP_UINT32("hmb_hmmin_mb", FemuCtrl, cfg_hmb_hmmin_mb,
+                       FEMU_HMB_HMMIN_MB),
+    DEFINE_PROP_UINT32("hmb_hmpre_mb", FemuCtrl, cfg_hmb_hmpre_mb,
+                       FEMU_HMB_HMPRE_MB),
+    DEFINE_PROP_UINT32("l2p_l1_size_kb", FemuCtrl, cfg_l2p_l1_size_kb,
+                       FEMU_L2P_L1_SIZE_KB),
+    DEFINE_PROP_UINT32("l2p_l2_size_kb", FemuCtrl, cfg_l2p_l2_size_kb,
+                       FEMU_L2P_L2_SIZE_KB),
+    DEFINE_PROP_UINT32("l2p_pt_page_size", FemuCtrl, cfg_l2p_pt_page_size,
+                       FEMU_L2P_PT_PAGE_SIZE),
+    DEFINE_PROP_UINT64("l2p_l1_rd_lat_ns", FemuCtrl, cfg_l2p_l1_rd_lat_ns,
+                       FEMU_L2P_L1_RD_LAT_NS),
+    DEFINE_PROP_UINT64("l2p_l1_wr_lat_ns", FemuCtrl, cfg_l2p_l1_wr_lat_ns,
+                       FEMU_L2P_L1_WR_LAT_NS),
+    DEFINE_PROP_UINT64("l2p_l2_rd_lat_ns", FemuCtrl, cfg_l2p_l2_rd_lat_ns,
+                       FEMU_L2P_L2_RD_LAT_NS),
+    DEFINE_PROP_UINT64("l2p_l2_wr_lat_ns", FemuCtrl, cfg_l2p_l2_wr_lat_ns,
+                       FEMU_L2P_L2_WR_LAT_NS),
+    DEFINE_PROP_UINT64("l2p_l3_rd_lat_mul", FemuCtrl, cfg_l2p_l3_rd_lat_mul,
+                       FEMU_L2P_L3_RD_LAT_MUL),
+    DEFINE_PROP_UINT64("l2p_l3_wr_lat_mul", FemuCtrl, cfg_l2p_l3_wr_lat_mul,
+                       FEMU_L2P_L3_WR_LAT_MUL),
+    DEFINE_PROP_UINT32("wb_mcp_entries_per_q", FemuCtrl,
+                       cfg_wb_mcp_entries_per_q,
+                       FEMU_WB_MCP_ENTRIES_PER_Q),
+    DEFINE_PROP_UINT32("wb_flush_watermark_pct", FemuCtrl,
+                       cfg_wb_flush_watermark_pct,
+                       FEMU_WB_FLUSH_WATERMARK_PCT),
+    DEFINE_PROP_UINT32("wb_idle_rounds_default", FemuCtrl,
+                       cfg_wb_idle_rounds_default,
+                       FEMU_WB_IDLE_ROUNDS_DEFAULT),
     DEFINE_PROP_UINT32("entries", FemuCtrl, max_q_ents, 0x7ff),
     DEFINE_PROP_UINT8("multipoller_enabled", FemuCtrl, multipoller_enabled, 0),
     DEFINE_PROP_UINT8("max_cqes", FemuCtrl, max_cqes, 0x4),

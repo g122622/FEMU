@@ -27,6 +27,36 @@ ch_xfer_lat=0 # channel transfer time, ignored for now
 gc_thres_pcent=75
 gc_thres_pcent_high=95
 
+# -----------------------------------------------------------------------
+# FEMU experiment/runtime knobs (explicitly set to preserve pre-change behavior)
+#
+# Pre-change equivalent behavior:
+# - HMB enabled
+# - L2P multi-level cache enabled
+# - WB feature enabled (still requires host-side 0xd1 handshake to actually enter WB path)
+# - Original default sizes/latencies/watermarks
+exp_enable_hmb=1
+exp_enable_l2p_multilevel=1
+exp_enable_wb=1
+l2p_bypass_meta_mode=0
+
+hmb_hmmin_mb=128
+hmb_hmpre_mb=128
+
+l2p_l1_size_kb=512
+l2p_l2_size_kb=$((16 * 1024))
+l2p_pt_page_size=4096
+l2p_l1_rd_lat_ns=10
+l2p_l1_wr_lat_ns=10
+l2p_l2_rd_lat_ns=1200
+l2p_l2_wr_lat_ns=1800
+l2p_l3_rd_lat_mul=1
+l2p_l3_wr_lat_mul=1
+
+wb_mcp_entries_per_q=1024
+wb_flush_watermark_pct=80
+wb_idle_rounds_default=16
+
 #-----------------------------------------------------------------------
 
 #Compose the entire FEMU BBSSD command line options
@@ -47,6 +77,24 @@ FEMU_OPTIONS=${FEMU_OPTIONS}",blk_er_lat=${blk_er_lat}"
 FEMU_OPTIONS=${FEMU_OPTIONS}",ch_xfer_lat=${ch_xfer_lat}"
 FEMU_OPTIONS=${FEMU_OPTIONS}",gc_thres_pcent=${gc_thres_pcent}"
 FEMU_OPTIONS=${FEMU_OPTIONS}",gc_thres_pcent_high=${gc_thres_pcent_high}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",exp_enable_hmb=${exp_enable_hmb}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",exp_enable_l2p_multilevel=${exp_enable_l2p_multilevel}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",exp_enable_wb=${exp_enable_wb}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",l2p_bypass_meta_mode=${l2p_bypass_meta_mode}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",hmb_hmmin_mb=${hmb_hmmin_mb}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",hmb_hmpre_mb=${hmb_hmpre_mb}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",l2p_l1_size_kb=${l2p_l1_size_kb}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",l2p_l2_size_kb=${l2p_l2_size_kb}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",l2p_pt_page_size=${l2p_pt_page_size}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",l2p_l1_rd_lat_ns=${l2p_l1_rd_lat_ns}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",l2p_l1_wr_lat_ns=${l2p_l1_wr_lat_ns}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",l2p_l2_rd_lat_ns=${l2p_l2_rd_lat_ns}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",l2p_l2_wr_lat_ns=${l2p_l2_wr_lat_ns}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",l2p_l3_rd_lat_mul=${l2p_l3_rd_lat_mul}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",l2p_l3_wr_lat_mul=${l2p_l3_wr_lat_mul}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",wb_mcp_entries_per_q=${wb_mcp_entries_per_q}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",wb_flush_watermark_pct=${wb_flush_watermark_pct}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",wb_idle_rounds_default=${wb_idle_rounds_default}"
 
 echo ${FEMU_OPTIONS}
 
@@ -65,6 +113,8 @@ sudo ./qemu-system-x86_64 \
     -cpu host \
     -smp 4 \
     -m 4G \
+    -fsdev local,id=wsl-share,path=/home/g122622/dev/FEMU/hw/femu,security_model=none \
+    -device virtio-9p-pci,fsdev=wsl-share,mount_tag=wsl-share \
     -device virtio-scsi-pci,id=scsi0 \
     -device scsi-hd,drive=hd0 \
     -drive file=$OSIMGF,if=none,aio=native,cache=none,format=qcow2,id=hd0 \
