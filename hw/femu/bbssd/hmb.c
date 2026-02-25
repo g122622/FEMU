@@ -1,5 +1,7 @@
 #include "hmb.h"
 #include "write_buffer.h"
+#include "../common/hmb-config.h"
+#include "../common/hmb-types.h"
 
 uint64_t femu_hmb_total_bytes(FemuCtrl *n)
 {

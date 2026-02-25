@@ -4,6 +4,7 @@
 #include "./nvme.h"
 #include "./bbssd/hmb.h"
 #include "./bbssd/l2p_cache.h"
+#include "./common/hmb-config.h"
 
 #define NVME_SPEC_VER (0x00010400)
 
