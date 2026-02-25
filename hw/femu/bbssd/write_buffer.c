@@ -209,6 +209,22 @@ static bool wb_mcp_push_locked(FemuCtrl *n, FemuWbLocal *l,
     return true;
 }
 
+static bool wb_sync_seg_to_backend(FemuCtrl *n, FemuWbSeg *seg)
+{
+    struct ssd *ssd = n->ssd;
+    uint64_t data_off;
+    uint8_t *dst;
+
+    if (!ssd || !n->mbe || !n->mbe->logical_space || !seg) {
+        return false;
+    }
+
+    data_off = seg->slba * ssd->sp.secsz;
+    dst = (uint8_t *)n->mbe->logical_space + data_off;
+
+    return femu_hmb_rw(n, seg->hmb_off, dst, seg->len, false);
+}
+
 static void wb_mcp_release_locked(FemuWbLocal *l, uint32_t *slots,
                                   uint32_t seg_cnt)
 {
@@ -1024,6 +1040,12 @@ uint16_t femu_wb_io_notify_copy_done(FemuCtrl *n, NvmeCmd *cmd,
 
         if (!seg) {
             continue;
+        }
+
+        if (!wb_sync_seg_to_backend(n, seg)) {
+            femu_err("WB 0xd5: mirror-to-backend failed qid=%u cmd_id=%u lpn=%" PRIu64
+                     " off=0x%" PRIx64 " len=%u\n",
+                     args.qid, args.cmd_id, seg->lpn, seg->hmb_off, seg->len);
         }
 
         seg->state = FEMU_WB_SEG_COPY_DONE;

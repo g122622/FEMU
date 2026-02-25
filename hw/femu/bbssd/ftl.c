@@ -1033,6 +1033,9 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
 
 static uint64_t ssd_trim(struct ssd *ssd, NvmeRequest *req)
 {
+    // 输出error：目前暂不支持trim
+    ftl_err("TRIM command is currently not supported due to write buffer.\n");
+
     struct ssdparams *spp = &ssd->sp;
     NvmeDsmRange *ranges = req->dsm_ranges;
     int nr_ranges = req->dsm_nr_ranges;
