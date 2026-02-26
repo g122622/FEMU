@@ -560,7 +560,7 @@ bool femu_wb_stage_write_req(struct ssd *ssd, NvmeRequest *req,
         n->wb.mcp_full_cnt++;
         l->fallback_cnt++;
         n->wb.fallback_cnt++;
-        femu_log("WB fallback(write): qid=%u cmd_id=%u mcp_free=%u need=%u\n",
+        femu_debug("WB fallback(write): qid=%u cmd_id=%u mcp_free=%u need=%u\n",
                  qid, cmd_id, l->mcp_free_cnt, seg_cnt);
         goto out_unlock;
     }
