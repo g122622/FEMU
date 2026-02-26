@@ -1348,6 +1348,7 @@ typedef struct FemuCtrl {
     /* Experiment/runtime knobs (compile-time defaults from common config headers) */
     uint8_t         exp_enable_hmb;
     uint8_t         exp_enable_l2p_multilevel;
+    uint8_t         exp_enable_l2p_l2_rw_in_hmb;
     uint8_t         exp_enable_wb;
     uint8_t         l2p_bypass_meta_mode;
 

@@ -326,7 +326,10 @@ static int nvme_check_constraints(FemuCtrl *n)
                      NVME_ONCS_DSM | NVME_ONCS_WRITE_ZEROS)) ||
         (n->exp_enable_hmb > 1) ||
         (n->exp_enable_l2p_multilevel > 1) ||
+        (n->exp_enable_l2p_l2_rw_in_hmb > 1) ||
         (n->exp_enable_wb > 1) ||
+        (n->exp_enable_l2p_l2_rw_in_hmb &&
+         (!n->exp_enable_hmb || !n->exp_enable_l2p_multilevel)) ||
         (n->l2p_bypass_meta_mode > FEMU_L2P_BYPASS_META_L3) ||
         (n->cfg_hmb_hmmin_mb == 0) ||
         (n->cfg_hmb_hmpre_mb == 0) ||
@@ -657,6 +660,9 @@ static const Property femu_props[] = {
     DEFINE_PROP_UINT8("exp_enable_l2p_multilevel", FemuCtrl,
                       exp_enable_l2p_multilevel,
                       FEMU_EXP_ENABLE_L2P_MULTILEVEL_DEFAULT),
+    DEFINE_PROP_UINT8("exp_enable_l2p_l2_rw_in_hmb", FemuCtrl,
+                      exp_enable_l2p_l2_rw_in_hmb,
+                      FEMU_EXP_ENABLE_L2P_L2_RW_IN_HMB_DEFAULT),
     DEFINE_PROP_UINT8("exp_enable_wb", FemuCtrl, exp_enable_wb,
                       FEMU_EXP_ENABLE_WB_DEFAULT),
     DEFINE_PROP_UINT8("l2p_bypass_meta_mode", FemuCtrl,

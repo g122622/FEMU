@@ -37,19 +37,22 @@ gc_thres_pcent_high=95
 # - Original default sizes/latencies/watermarks
 exp_enable_hmb=1
 exp_enable_l2p_multilevel=1
+exp_enable_l2p_l2_rw_in_hmb=0
 exp_enable_wb=1
 l2p_bypass_meta_mode=0
 
 hmb_hmmin_mb=128
 hmb_hmpre_mb=128
 
-l2p_l1_size_kb=512
-l2p_l2_size_kb=$((16 * 1024))
+l2p_l1_size_kb=$((256 * 1))
+l2p_l2_size_kb=$((2 * 1024))
 l2p_pt_page_size=4096
+
+# 各级缓存延迟
 l2p_l1_rd_lat_ns=10
 l2p_l1_wr_lat_ns=10
-l2p_l2_rd_lat_ns=1200
-l2p_l2_wr_lat_ns=1800
+l2p_l2_rd_lat_ns=300
+l2p_l2_wr_lat_ns=400
 l2p_l3_rd_lat_mul=1
 l2p_l3_wr_lat_mul=1
 
@@ -79,6 +82,7 @@ FEMU_OPTIONS=${FEMU_OPTIONS}",gc_thres_pcent=${gc_thres_pcent}"
 FEMU_OPTIONS=${FEMU_OPTIONS}",gc_thres_pcent_high=${gc_thres_pcent_high}"
 FEMU_OPTIONS=${FEMU_OPTIONS}",exp_enable_hmb=${exp_enable_hmb}"
 FEMU_OPTIONS=${FEMU_OPTIONS}",exp_enable_l2p_multilevel=${exp_enable_l2p_multilevel}"
+FEMU_OPTIONS=${FEMU_OPTIONS}",exp_enable_l2p_l2_rw_in_hmb=${exp_enable_l2p_l2_rw_in_hmb}"
 FEMU_OPTIONS=${FEMU_OPTIONS}",exp_enable_wb=${exp_enable_wb}"
 FEMU_OPTIONS=${FEMU_OPTIONS}",l2p_bypass_meta_mode=${l2p_bypass_meta_mode}"
 FEMU_OPTIONS=${FEMU_OPTIONS}",hmb_hmmin_mb=${hmb_hmmin_mb}"

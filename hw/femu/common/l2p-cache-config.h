@@ -10,6 +10,7 @@
  * - They may be overridden at runtime by FEMU device properties.
  */
 #define FEMU_EXP_ENABLE_L2P_MULTILEVEL_DEFAULT 1
+#define FEMU_EXP_ENABLE_L2P_L2_RW_IN_HMB_DEFAULT 1
 #define FEMU_L2P_L1_SIZE_KB                512
 #define FEMU_L2P_L2_SIZE_KB                (16 * 1024)
 

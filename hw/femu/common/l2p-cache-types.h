@@ -15,6 +15,7 @@ typedef struct FemuL2pCacheMeta {
 
 typedef struct FemuL2pL2Cache {
     bool initialized;
+    bool rw_in_hmb;
     uint32_t algo;
     uint32_t page_size;
     uint32_t ents_per_page;
@@ -24,6 +25,7 @@ typedef struct FemuL2pL2Cache {
     int32_t lru_tail;
 
     FemuL2pCacheMeta *meta;
+    struct ppa *slots;
     GHashTable *tag2slot;
 
     uint64_t hmb_total_bytes;

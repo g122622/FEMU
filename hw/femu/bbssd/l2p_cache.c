@@ -23,6 +23,11 @@ static inline bool l2p_multilevel_enabled(struct ssd *ssd)
     return ssd->n->exp_enable_l2p_multilevel;
 }
 
+static inline bool l2p_l2_rw_in_hmb_enabled(struct ssd *ssd)
+{
+    return ssd->n->exp_enable_l2p_l2_rw_in_hmb;
+}
+
 static inline uint64_t l2p_bypass_read_lat(struct ssd *ssd)
 {
     return (ssd->n->l2p_bypass_meta_mode == FEMU_L2P_BYPASS_META_L3) ?
@@ -134,6 +139,13 @@ static inline struct ppa *l1_slot_base(struct ssd *ssd, int32_t slot)
     return &ssd->l2p_l1.slots[(uint64_t)slot * ssd->l2p_l1.ents_per_page];
 }
 
+static inline struct ppa *l2_slot_base(struct ssd *ssd, int32_t slot)
+{
+    FemuL2pL2Cache *l2 = &ssd->n->l2p_l2;
+
+    return l2->slots ? &l2->slots[(uint64_t)slot * l2->ents_per_page] : NULL;
+}
+
 static void l3_copy_pt_page_from_maptbl(struct ssd *ssd, uint64_t ptid,
                                         struct ppa *dst)
 {
@@ -156,17 +168,39 @@ static inline void set_maptbl_ent_raw(struct ssd *ssd, uint64_t lpn,
 static inline bool l2p_l2_slot_read_page(struct ssd *ssd, int32_t slot,
                                          struct ppa *dst)
 {
+    FemuL2pL2Cache *l2 = &ssd->n->l2p_l2;
     uint32_t page_sz = l2p_cfg_pt_page_size(ssd);
-    uint64_t off = (uint64_t)slot * page_sz;
-    return femu_hmb_rw(ssd->n, off, dst, page_sz, false);
+
+    if (l2->rw_in_hmb) {
+        uint64_t off = (uint64_t)slot * page_sz;
+        return femu_hmb_rw(ssd->n, off, dst, page_sz, false);
+    }
+
+    if (!l2->slots) {
+        return false;
+    }
+
+    memcpy(dst, &l2->slots[(uint64_t)slot * l2->ents_per_page], page_sz);
+    return true;
 }
 
 static inline bool l2p_l2_slot_write_page(struct ssd *ssd, int32_t slot,
                                           struct ppa *src)
 {
+    FemuL2pL2Cache *l2 = &ssd->n->l2p_l2;
     uint32_t page_sz = l2p_cfg_pt_page_size(ssd);
-    uint64_t off = (uint64_t)slot * page_sz;
-    return femu_hmb_rw(ssd->n, off, src, page_sz, true);
+
+    if (l2->rw_in_hmb) {
+        uint64_t off = (uint64_t)slot * page_sz;
+        return femu_hmb_rw(ssd->n, off, src, page_sz, true);
+    }
+
+    if (!l2->slots) {
+        return false;
+    }
+
+    memcpy(&l2->slots[(uint64_t)slot * l2->ents_per_page], src, page_sz);
+    return true;
 }
 
 static int32_t l2p_find_l1_slot(struct ssd *ssd, uint64_t ptid)
@@ -251,6 +285,48 @@ static void l2p_l2_install_page(struct ssd *ssd, uint64_t ptid,
     }
 }
 
+static int32_t l2p_l2_install_l3_page_dram(struct ssd *ssd, uint64_t ptid,
+                                           uint64_t *lat, bool account_lat)
+{
+    FemuL2pL2Cache *l2 = &ssd->n->l2p_l2;
+    const L2pCacheAlgoOps *ops = l2p_get_algo_ops(l2->algo);
+    int32_t victim;
+    struct ppa *dst;
+
+    ftl_assert(!l2->rw_in_hmb);
+    ftl_assert(l2->slots);
+
+    victim = ops->pick_victim(l2->meta, l2->nr_slots,
+                              &l2->used_slots, &l2->lru_head,
+                              &l2->lru_tail);
+
+    if (l2->meta[victim].valid) {
+        uint64_t old_tag = l2->meta[victim].tag;
+
+        g_hash_table_remove(l2->tag2slot, &old_tag);
+        l2->evicts++;
+    }
+
+    dst = l2_slot_base(ssd, victim);
+    l3_copy_pt_page_from_maptbl(ssd, ptid, dst);
+
+    l2->meta[victim].tag = ptid;
+    l2->meta[victim].valid = 1;
+    if (l2->meta[victim].prev != -1 || l2->meta[victim].next != -1 ||
+        l2->lru_head == victim || l2->lru_tail == victim) {
+        l2p_lru_remove(l2->meta, &l2->lru_head, &l2->lru_tail, victim);
+    }
+    l2p_lru_push_front(l2->meta, &l2->lru_head, &l2->lru_tail, victim);
+    g_hash_table_insert(l2->tag2slot, &l2->meta[victim].tag,
+                        GINT_TO_POINTER(victim + 1));
+
+    if (account_lat && lat) {
+        *lat += ssd->l2p_lat.l2_wr_lat;
+    }
+
+    return victim;
+}
+
 static struct ppa get_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
                                           uint64_t *meta_lat,
                                           bool account_lat)
@@ -259,11 +335,10 @@ static struct ppa get_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
     uint32_t ptoff;
     int32_t slot;
     struct ppa ret;
-    struct ppa *page_buf;
+    FemuL2pL2Cache *l2 = &ssd->n->l2p_l2;
+    struct ppa *page_buf = NULL;
 
     ftl_assert(lpn < ssd->sp.tt_pgs);
-    page_buf = g_malloc0(ssd->l2p_l1.page_size);
-    ftl_assert(page_buf);
 
     ptid = l2p_get_ptid(ssd, lpn);
     ptoff = l2p_get_ptoff(ssd, lpn);
@@ -278,7 +353,6 @@ static struct ppa get_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
                 &ssd->l2p_l1.lru_head, &ssd->l2p_l1.lru_tail, slot);
         ssd->l2p_l1.hits++;
         ret = l1_slot_base(ssd, slot)[ptoff];
-        g_free(page_buf);
         return ret;
     }
 
@@ -289,15 +363,25 @@ static struct ppa get_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
 
     slot = l2p_find_l2_slot(ssd, ptid);
     if (slot >= 0) {
-        FemuL2pL2Cache *l2 = &ssd->n->l2p_l2;
-
-        ftl_assert(l2p_l2_slot_read_page(ssd, slot, page_buf));
         l2p_get_algo_ops(l2->algo)->touch(l2->meta, &l2->lru_head,
                 &l2->lru_tail, slot);
         l2->hits++;
-        l2p_l1_install_page(ssd, ptid, page_buf, meta_lat, account_lat);
-        ret = page_buf[ptoff];
-        g_free(page_buf);
+
+        if (l2->rw_in_hmb) {
+            page_buf = g_malloc0(ssd->l2p_l1.page_size);
+            ftl_assert(page_buf);
+            ftl_assert(l2p_l2_slot_read_page(ssd, slot, page_buf));
+            l2p_l1_install_page(ssd, ptid, page_buf, meta_lat, account_lat);
+            ret = page_buf[ptoff];
+            g_free(page_buf);
+        } else {
+            struct ppa *l2_page = l2_slot_base(ssd, slot);
+
+            ftl_assert(l2_page);
+            l2p_l1_install_page(ssd, ptid, l2_page, meta_lat, account_lat);
+            ret = l2_page[ptoff];
+        }
+
         return ret;
     }
 
@@ -305,12 +389,25 @@ static struct ppa get_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
     if (account_lat && meta_lat) {
         *meta_lat += ssd->l2p_lat.l3_rd_lat;
     }
-    l3_copy_pt_page_from_maptbl(ssd, ptid, page_buf);
-    l2p_l2_install_page(ssd, ptid, page_buf, meta_lat, account_lat);
-    l2p_l1_install_page(ssd, ptid, page_buf, meta_lat, account_lat);
 
-    ret = page_buf[ptoff];
-    g_free(page_buf);
+    if (l2->rw_in_hmb) {
+        page_buf = g_malloc0(ssd->l2p_l1.page_size);
+        ftl_assert(page_buf);
+        l3_copy_pt_page_from_maptbl(ssd, ptid, page_buf);
+        l2p_l2_install_page(ssd, ptid, page_buf, meta_lat, account_lat);
+        l2p_l1_install_page(ssd, ptid, page_buf, meta_lat, account_lat);
+        ret = page_buf[ptoff];
+        g_free(page_buf);
+    } else {
+        struct ppa *l2_page;
+
+        slot = l2p_l2_install_l3_page_dram(ssd, ptid, meta_lat, account_lat);
+        l2_page = l2_slot_base(ssd, slot);
+        ftl_assert(l2_page);
+        l2p_l1_install_page(ssd, ptid, l2_page, meta_lat, account_lat);
+        ret = l2_page[ptoff];
+    }
+
     return ret;
 }
 
@@ -322,42 +419,82 @@ static uint64_t set_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
     uint64_t maxlat = account_lat ? ssd->l2p_lat.l3_wr_lat : 0;
     int32_t l1_slot = l2p_find_l1_slot(ssd, ptid);
     int32_t l2_slot = l2p_find_l2_slot(ssd, ptid);
-    struct ppa *page_buf;
+    FemuL2pL2Cache *l2 = &ssd->n->l2p_l2;
+    struct ppa *page_buf = NULL;
 
     ftl_assert(lpn < ssd->sp.tt_pgs);
-    page_buf = g_malloc0(ssd->l2p_l1.page_size);
-    ftl_assert(page_buf);
 
-    if (l2_slot < 0) {
-        l3_copy_pt_page_from_maptbl(ssd, ptid, page_buf);
-        l2p_l2_install_page(ssd, ptid, page_buf, NULL, false);
-        if (account_lat) {
-            maxlat = MAX(maxlat, ssd->l2p_lat.l2_wr_lat);
+    if (l2->rw_in_hmb) {
+        page_buf = g_malloc0(ssd->l2p_l1.page_size);
+        ftl_assert(page_buf);
+
+        if (l2_slot < 0) {
+            l3_copy_pt_page_from_maptbl(ssd, ptid, page_buf);
+            l2p_l2_install_page(ssd, ptid, page_buf, NULL, false);
+            if (account_lat) {
+                maxlat = MAX(maxlat, ssd->l2p_lat.l2_wr_lat);
+            }
+            l2_slot = l2p_find_l2_slot(ssd, ptid);
+            ftl_assert(l2_slot >= 0);
         }
-        l2_slot = l2p_find_l2_slot(ssd, ptid);
-        ftl_assert(l2_slot >= 0);
-    }
 
-    if (l1_slot < 0) {
-        ftl_assert(l2p_l2_slot_read_page(ssd, l2_slot, page_buf));
-        l2p_l1_install_page(ssd, ptid, page_buf, NULL, false);
+        if (l1_slot < 0) {
+            ftl_assert(l2p_l2_slot_read_page(ssd, l2_slot, page_buf));
+            l2p_l1_install_page(ssd, ptid, page_buf, NULL, false);
+            if (account_lat) {
+                maxlat = MAX(maxlat, ssd->l2p_lat.l1_wr_lat);
+            }
+            l1_slot = l2p_find_l1_slot(ssd, ptid);
+            ftl_assert(l1_slot >= 0);
+        }
+
+        l1_slot_base(ssd, l1_slot)[ptoff] = *ppa;
         if (account_lat) {
             maxlat = MAX(maxlat, ssd->l2p_lat.l1_wr_lat);
         }
-        l1_slot = l2p_find_l1_slot(ssd, ptid);
-        ftl_assert(l1_slot >= 0);
-    }
 
-    l1_slot_base(ssd, l1_slot)[ptoff] = *ppa;
-    if (account_lat) {
-        maxlat = MAX(maxlat, ssd->l2p_lat.l1_wr_lat);
-    }
+        ftl_assert(l2p_l2_slot_read_page(ssd, l2_slot, page_buf));
+        page_buf[ptoff] = *ppa;
+        ftl_assert(l2p_l2_slot_write_page(ssd, l2_slot, page_buf));
+        if (account_lat) {
+            maxlat = MAX(maxlat, ssd->l2p_lat.l2_wr_lat);
+        }
 
-    ftl_assert(l2p_l2_slot_read_page(ssd, l2_slot, page_buf));
-    page_buf[ptoff] = *ppa;
-    ftl_assert(l2p_l2_slot_write_page(ssd, l2_slot, page_buf));
-    if (account_lat) {
-        maxlat = MAX(maxlat, ssd->l2p_lat.l2_wr_lat);
+        g_free(page_buf);
+    } else {
+        struct ppa *l2_page;
+
+        ftl_assert(l2->slots);
+
+        if (l2_slot < 0) {
+            l2_slot = l2p_l2_install_l3_page_dram(ssd, ptid, NULL, false);
+            if (account_lat) {
+                maxlat = MAX(maxlat, ssd->l2p_lat.l2_wr_lat);
+            }
+        }
+
+        if (l1_slot < 0) {
+            l2_page = l2_slot_base(ssd, l2_slot);
+            ftl_assert(l2_page);
+            l2p_l1_install_page(ssd, ptid, l2_page, NULL, false);
+            if (account_lat) {
+                maxlat = MAX(maxlat, ssd->l2p_lat.l1_wr_lat);
+            }
+            l1_slot = l2p_find_l1_slot(ssd, ptid);
+            ftl_assert(l1_slot >= 0);
+        }
+
+        l1_slot_base(ssd, l1_slot)[ptoff] = *ppa;
+        if (account_lat) {
+            maxlat = MAX(maxlat, ssd->l2p_lat.l1_wr_lat);
+        }
+
+        l2_page = l2_slot_base(ssd, l2_slot);
+        ftl_assert(l2_page);
+        l2_page[ptoff] = *ppa;
+        if (account_lat) {
+            maxlat = MAX(maxlat, ssd->l2p_lat.l2_wr_lat);
+        }
     }
 
     set_maptbl_ent_raw(ssd, lpn, ppa);
@@ -365,8 +502,6 @@ static uint64_t set_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
             &ssd->l2p_l1.lru_head, &ssd->l2p_l1.lru_tail, l1_slot);
     l2p_get_algo_ops(ssd->n->l2p_l2.algo)->touch(ssd->n->l2p_l2.meta,
             &ssd->n->l2p_l2.lru_head, &ssd->n->l2p_l2.lru_tail, l2_slot);
-
-    g_free(page_buf);
 
     return maxlat;
 }
@@ -537,6 +672,7 @@ static bool ssd_try_init_l2p_l2_cache(struct ssd *ssd)
     ftl_assert(wanted_slots > 0);
 
     l2->initialized = true;
+    l2->rw_in_hmb = l2p_l2_rw_in_hmb_enabled(ssd);
     l2->algo = FEMU_L2P_CACHE_ALGO_DEFAULT;
     l2->page_size = page_sz;
     l2->ents_per_page = page_sz / sizeof(struct ppa);
@@ -556,8 +692,26 @@ static bool ssd_try_init_l2p_l2_cache(struct ssd *ssd)
         l2->meta[i].next = -1;
     }
 
-    ftl_log("L2P L2 cache ready on HMB: size=%uKB slots=%u hmb_bytes=%" PRIu64
+    if (!l2->rw_in_hmb) {
+        l2->slots = g_malloc0((uint64_t)l2->nr_slots * l2->ents_per_page *
+                              sizeof(struct ppa));
+        if (!l2->slots) {
+            g_free(l2->meta);
+            l2->meta = NULL;
+            g_hash_table_destroy(l2->tag2slot);
+            l2->tag2slot = NULL;
+            l2->initialized = false;
+            return false;
+        }
+
+        for (uint64_t i = 0; i < (uint64_t)l2->nr_slots * l2->ents_per_page; i++) {
+            l2->slots[i].ppa = UNMAPPED_PPA;
+        }
+    }
+
+    ftl_log("L2P L2 cache ready (%s): size=%uKB slots=%u hmb_bytes=%" PRIu64
             " descs=%u\n",
+            l2->rw_in_hmb ? "rw_in_hmb" : "rw_in_dram",
             l2_size_kb, l2->nr_slots, l2->hmb_total_bytes,
             n->hmb_desc_count);
 
@@ -642,11 +796,14 @@ uint64_t femu_l2p_set_maptbl_ent_with_lat(struct ssd *ssd, uint64_t lpn,
 void femu_l2p_ctrl_reset(FemuCtrl *n)
 {
     n->l2p_l2.initialized = false;
+    n->l2p_l2.rw_in_hmb = false;
     n->l2p_l2.used_slots = 0;
     n->l2p_l2.lru_head = -1;
     n->l2p_l2.lru_tail = -1;
     g_free(n->l2p_l2.meta);
     n->l2p_l2.meta = NULL;
+    g_free(n->l2p_l2.slots);
+    n->l2p_l2.slots = NULL;
     if (n->l2p_l2.tag2slot) {
         g_hash_table_destroy(n->l2p_l2.tag2slot);
         n->l2p_l2.tag2slot = NULL;
