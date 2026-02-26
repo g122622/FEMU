@@ -8,11 +8,66 @@ uint64_t femu_hmb_total_bytes(FemuCtrl *n)
     return n->hmb_size_bytes;
 }
 
+static inline bool hmb_offset_in_seg(FemuCtrl *n, uint32_t idx, uint64_t off)
+{
+    uint64_t start;
+    uint64_t size;
+
+    if (!n->hmb_seg_starts || !n->hmb_seg_sizes || idx >= n->hmb_desc_count) {
+        return false;
+    }
+
+    start = n->hmb_seg_starts[idx];
+    size = n->hmb_seg_sizes[idx];
+    return (off >= start) && (off < start + size);
+}
+
+static bool hmb_find_seg(FemuCtrl *n, uint64_t off, uint32_t *idx_out,
+                         uint64_t *in_seg_out)
+{
+    uint32_t lo, hi;
+
+    if (!n->hmb_descs || !n->hmb_desc_count || !n->hmb_seg_starts ||
+        !n->hmb_seg_sizes) {
+        return false;
+    }
+
+    if (n->hmb_lookup_cache_valid &&
+        hmb_offset_in_seg(n, n->hmb_lookup_last_idx, off)) {
+        uint32_t idx = n->hmb_lookup_last_idx;
+
+        *idx_out = idx;
+        *in_seg_out = off - n->hmb_seg_starts[idx];
+        return true;
+    }
+
+    lo = 0;
+    hi = n->hmb_desc_count;
+    while (lo < hi) {
+        uint32_t mid = lo + ((hi - lo) >> 1);
+        uint64_t start = n->hmb_seg_starts[mid];
+        uint64_t size = n->hmb_seg_sizes[mid];
+
+        if (off < start) {
+            hi = mid;
+        } else if (off >= start + size) {
+            lo = mid + 1;
+        } else {
+            n->hmb_lookup_last_idx = mid;
+            n->hmb_lookup_cache_valid = true;
+            *idx_out = mid;
+            *in_seg_out = off - start;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool femu_hmb_rw(FemuCtrl *n, uint64_t off, void *buf, uint32_t len,
                  bool is_write)
 {
     uint8_t *p = buf;
-    uint64_t cur = 0;
     uint32_t left = len;
 
     if (!n->hmb_enabled || !n->hmb_descs || !n->hmb_desc_count) {
@@ -23,19 +78,24 @@ bool femu_hmb_rw(FemuCtrl *n, uint64_t off, void *buf, uint32_t len,
         return false;
     }
 
-    for (uint32_t i = 0; i < n->hmb_desc_count && left; i++) {
-        uint64_t seg_addr = n->hmb_descs[i].addr;
-        uint64_t seg_sz = (uint64_t)n->hmb_descs[i].size * n->page_size;
+    while (left) {
+        uint32_t idx;
+        uint64_t in_seg;
+        uint64_t seg_addr;
+        uint64_t seg_sz;
+        uint64_t seg_avail;
+        uint32_t xfer;
+        uint64_t gpa;
 
-        if (off >= cur + seg_sz) {
-            cur += seg_sz;
-            continue;
+        if (!hmb_find_seg(n, off, &idx, &in_seg)) {
+            return false;
         }
 
-        uint64_t in_seg = off > cur ? off - cur : 0;
-        uint64_t seg_avail = seg_sz - in_seg;
-        uint32_t xfer = MIN((uint64_t)left, seg_avail);
-        uint64_t gpa = seg_addr + in_seg;
+        seg_addr = n->hmb_descs[idx].addr;
+        seg_sz = n->hmb_seg_sizes[idx];
+        seg_avail = seg_sz - in_seg;
+        xfer = MIN((uint64_t)left, seg_avail);
+        gpa = seg_addr + in_seg;
 
         if (is_write) {
             nvme_addr_write(n, gpa, p, xfer);
@@ -46,7 +106,6 @@ bool femu_hmb_rw(FemuCtrl *n, uint64_t off, void *buf, uint32_t len,
         p += xfer;
         off += xfer;
         left -= xfer;
-        cur += seg_sz;
     }
 
     return left == 0;
@@ -61,6 +120,12 @@ void femu_hmb_ctrl_reset(FemuCtrl *n)
     n->hmb_desc_count = 0;
     g_free(n->hmb_descs);
     n->hmb_descs = NULL;
+    g_free(n->hmb_seg_starts);
+    n->hmb_seg_starts = NULL;
+    g_free(n->hmb_seg_sizes);
+    n->hmb_seg_sizes = NULL;
+    n->hmb_lookup_last_idx = 0;
+    n->hmb_lookup_cache_valid = false;
 
     n->hmb_prev_valid = false;
     n->hmb_prev_hsize = 0;
@@ -218,9 +283,36 @@ uint16_t femu_hmb_set_feature(FemuCtrl *n, NvmeCmd *cmd, NvmeCqe *cqe)
     }
 
     if (ehm) {
+        uint64_t *seg_starts;
+        uint64_t *seg_sizes;
+        uint64_t cur = 0;
+
+        seg_starts = g_malloc0(sizeof(*seg_starts) * hmdlec);
+        seg_sizes = g_malloc0(sizeof(*seg_sizes) * hmdlec);
+        if (!seg_starts || !seg_sizes) {
+            g_free(seg_starts);
+            g_free(seg_sizes);
+            st = NVME_INTERNAL_DEV_ERROR;
+            goto out_hmb_set;
+        }
+
+        for (uint32_t i = 0; i < hmdlec; i++) {
+            uint64_t seg_sz = (uint64_t)descs[i].size * n->page_size;
+
+            seg_starts[i] = cur;
+            seg_sizes[i] = seg_sz;
+            cur += seg_sz;
+        }
+
         g_free(n->hmb_descs);
         n->hmb_descs = descs;
         descs = NULL;
+        g_free(n->hmb_seg_starts);
+        n->hmb_seg_starts = seg_starts;
+        g_free(n->hmb_seg_sizes);
+        n->hmb_seg_sizes = seg_sizes;
+        n->hmb_lookup_last_idx = 0;
+        n->hmb_lookup_cache_valid = false;
 
         n->hmb_enabled = true;
         n->hmb_hsize = hsize;
@@ -260,6 +352,12 @@ uint16_t femu_hmb_set_feature(FemuCtrl *n, NvmeCmd *cmd, NvmeCqe *cqe)
         n->hmb_desc_count = 0;
         g_free(n->hmb_descs);
         n->hmb_descs = NULL;
+        g_free(n->hmb_seg_starts);
+        n->hmb_seg_starts = NULL;
+        g_free(n->hmb_seg_sizes);
+        n->hmb_seg_sizes = NULL;
+        n->hmb_lookup_last_idx = 0;
+        n->hmb_lookup_cache_valid = false;
         femu_wb_ctrl_reset(n);
         femu_log("HMB disabled\n");
     }

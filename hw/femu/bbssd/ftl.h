@@ -231,6 +231,8 @@ struct ssd {
 
     bool l2p_cache_ready;
     bool l2p_hmb_reject_logged;
+    struct ppa *l2p_scratch_page;
+    uint32_t l2p_scratch_page_size;
     uint64_t l2p_stats_last_log_ns;
     uint64_t l2p_l1_last_hits;
     uint64_t l2p_l1_last_misses;

@@ -1375,6 +1375,10 @@ typedef struct FemuCtrl {
     uint64_t        hmb_desc_addr;
     uint32_t        hmb_desc_count;
     NvmeHmbDescriptor *hmb_descs;
+    uint64_t        *hmb_seg_starts;
+    uint64_t        *hmb_seg_sizes;
+    uint32_t        hmb_lookup_last_idx;
+    bool            hmb_lookup_cache_valid;
 
     bool            hmb_prev_valid;
     uint32_t        hmb_prev_hsize;
