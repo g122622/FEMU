@@ -689,7 +689,7 @@ bool femu_wb_stage_write_req(struct ssd *ssd, NvmeRequest *req,
     req->wb_path = true;
     req->cqe.n.rsvd |= cpu_to_le32(FEMU_CQE_RSVD_MCP_READY);
     n->wb.idx_hits += seg_cnt;
-    femu_log("WB stage write: qid=%u cmd_id=%u seg_cnt=%u bytes=%" PRIu64
+    femu_debug("WB stage write: qid=%u cmd_id=%u seg_cnt=%u bytes=%" PRIu64
              " used=%" PRIu64 "/%" PRIu64 "\n",
              qid, cmd_id, seg_cnt, data_size, l->used, l->wb_bytes);
 
@@ -881,7 +881,7 @@ uint32_t femu_wb_stage_read_hits(struct ssd *ssd, NvmeRequest *req,
     req->cqe.n.rsvd |= cpu_to_le32(FEMU_CQE_RSVD_MCP_READY);
     n->wb.idx_hits += hit_cnt;
     l->idx_hits += hit_cnt;
-    femu_log("WB stage read-hit: qid=%u cmd_id=%u hit_cnt=%u\n",
+    femu_debug("WB stage read-hit: qid=%u cmd_id=%u hit_cnt=%u\n",
              qid, cmd_id, hit_cnt);
 
     qemu_mutex_unlock(&l->lpn_index_lock);
@@ -1162,7 +1162,7 @@ uint16_t femu_wb_io_notify_copy_done(FemuCtrl *n, NvmeCmd *cmd,
 
     n->wb.copy_done_notify_cnt++;
 
-    femu_log("WB 0xd5 COPY_DONE: qid=%u cmd_id=%u seg_cnt=%u\n",
+    femu_debug("WB 0xd5 COPY_DONE: qid=%u cmd_id=%u seg_cnt=%u\n",
              args.qid, args.cmd_id, args.seg_cnt);
     req->status = NVME_SUCCESS;
     return NVME_SUCCESS;
@@ -1240,7 +1240,7 @@ uint16_t femu_wb_io_notify_read_done(FemuCtrl *n, NvmeCmd *cmd,
 
     n->wb.read_done_notify_cnt++;
 
-    femu_log("WB 0xd9 READ_DONE: qid=%u cmd_id=%u seg_cnt=%u\n",
+    femu_debug("WB 0xd9 READ_DONE: qid=%u cmd_id=%u seg_cnt=%u\n",
              args.qid, args.cmd_id, args.seg_cnt);
     req->status = NVME_SUCCESS;
     return NVME_SUCCESS;
