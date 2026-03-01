@@ -622,6 +622,39 @@ static inline struct nand_page *get_pg(struct ssd *ssd, struct ppa *ppa)
     return &(blk->pg[ppa->g.pg]);
 }
 
+uint64_t femu_ftl_advance_l3_meta_io(struct ssd *ssd, uint64_t ptid,
+                                     bool is_write)
+{
+    struct ssdparams *spp = &ssd->sp;
+    uint64_t lun_idx;
+    int ch;
+    int lun;
+    struct nand_lun *lunp;
+    uint64_t cmd_stime;
+    uint64_t nand_stime;
+    uint64_t service_lat;
+
+    ftl_assert(spp->tt_luns > 0);
+    ftl_assert(spp->luns_per_ch > 0);
+
+    lun_idx = ptid % (uint64_t)spp->tt_luns;
+    ch = (int)(lun_idx / (uint64_t)spp->luns_per_ch);
+    lun = (int)(lun_idx % (uint64_t)spp->luns_per_ch);
+
+    ftl_assert(ch >= 0 && ch < spp->nchs);
+    ftl_assert(lun >= 0 && lun < spp->luns_per_ch);
+
+    lunp = &ssd->ch[ch].lun[lun];
+    service_lat = is_write ? ssd->l2p_lat.l3_wr_lat : ssd->l2p_lat.l3_rd_lat;
+
+    cmd_stime = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    nand_stime = (lunp->next_lun_avail_time < cmd_stime) ? cmd_stime :
+                 lunp->next_lun_avail_time;
+    lunp->next_lun_avail_time = nand_stime + service_lat;
+
+    return lunp->next_lun_avail_time - cmd_stime;
+}
+
 static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct
         nand_cmd *ncmd)
 {

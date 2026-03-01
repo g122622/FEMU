@@ -37,15 +37,15 @@ gc_thres_pcent_high=95
 # - Original default sizes/latencies/watermarks
 exp_enable_hmb=1
 exp_enable_l2p_multilevel=1
-exp_enable_l2p_l2_rw_in_hmb=0
+exp_enable_l2p_l2_rw_in_hmb=1
 exp_enable_wb=1
 l2p_bypass_meta_mode=0
 
-hmb_hmmin_mb=128
-hmb_hmpre_mb=128
+hmb_hmmin_mb=$((32 * 4))
+hmb_hmpre_mb=$((32 * 4))
 
 l2p_l1_size_kb=$((256 * 1))
-l2p_l2_size_kb=$((2 * 1024))
+l2p_l2_size_kb=$((512 * 4))
 l2p_pt_page_size=4096
 
 # 各级缓存延迟

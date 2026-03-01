@@ -40,6 +40,12 @@ static inline uint64_t l2p_bypass_write_lat(struct ssd *ssd)
            ssd->l2p_lat.l3_wr_lat : 0;
 }
 
+static inline uint64_t l2p_l3_meta_io_lat(struct ssd *ssd, uint64_t ptid,
+                                          bool is_write)
+{
+    return femu_ftl_advance_l3_meta_io(ssd, ptid, is_write);
+}
+
 static inline uint64_t l2p_get_ptid(struct ssd *ssd, uint64_t lpn)
 {
     return lpn / ssd->l2p_l1.ents_per_page;
@@ -398,8 +404,12 @@ static struct ppa get_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
     }
 
     ssd->n->l2p_l2.misses++;
-    if (account_lat && meta_lat) {
-        *meta_lat += ssd->l2p_lat.l3_rd_lat;
+    {
+        uint64_t l3_rlat = l2p_l3_meta_io_lat(ssd, ptid, false);
+
+        if (account_lat && meta_lat) {
+            *meta_lat += l3_rlat;
+        }
     }
 
     if (l2->rw_in_hmb) {
@@ -426,7 +436,7 @@ static uint64_t set_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
 {
     uint64_t ptid = l2p_get_ptid(ssd, lpn);
     uint32_t ptoff = l2p_get_ptoff(ssd, lpn);
-    uint64_t maxlat = account_lat ? ssd->l2p_lat.l3_wr_lat : 0;
+    uint64_t maxlat = 0;
     int32_t l1_slot = l2p_find_l1_slot(ssd, ptid);
     int32_t l2_slot = l2p_find_l2_slot(ssd, ptid);
     FemuL2pL2Cache *l2 = &ssd->n->l2p_l2;
@@ -438,9 +448,12 @@ static uint64_t set_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
         page_buf = l2p_get_scratch_page(ssd);
 
         if (l2_slot < 0) {
+            uint64_t l3_rlat = l2p_l3_meta_io_lat(ssd, ptid, false);
+
             l3_copy_pt_page_from_maptbl(ssd, ptid, page_buf);
             l2p_l2_install_page(ssd, ptid, page_buf, NULL, false);
             if (account_lat) {
+                maxlat = MAX(maxlat, l3_rlat);
                 maxlat = MAX(maxlat, ssd->l2p_lat.l2_wr_lat);
             }
             l2_slot = l2p_find_l2_slot(ssd, ptid);
@@ -474,8 +487,11 @@ static uint64_t set_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
         ftl_assert(l2->slots);
 
         if (l2_slot < 0) {
+            uint64_t l3_rlat = l2p_l3_meta_io_lat(ssd, ptid, false);
+
             l2_slot = l2p_l2_install_l3_page_dram(ssd, ptid, NULL, false);
             if (account_lat) {
+                maxlat = MAX(maxlat, l3_rlat);
                 maxlat = MAX(maxlat, ssd->l2p_lat.l2_wr_lat);
             }
         }
@@ -501,6 +517,14 @@ static uint64_t set_maptbl_ent_internal(struct ssd *ssd, uint64_t lpn,
         l2_page[ptoff] = *ppa;
         if (account_lat) {
             maxlat = MAX(maxlat, ssd->l2p_lat.l2_wr_lat);
+        }
+    }
+
+    {
+        uint64_t l3_wlat = l2p_l3_meta_io_lat(ssd, ptid, true);
+
+        if (account_lat) {
+            maxlat = MAX(maxlat, l3_wlat);
         }
     }
 

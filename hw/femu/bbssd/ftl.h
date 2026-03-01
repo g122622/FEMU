@@ -251,6 +251,17 @@ struct ssd {
 
 void ssd_init(FemuCtrl *n);
 
+/*
+ * Advance L3 metadata I/O on shared NAND LUN timeline.
+ *
+ * @ptid: L2P page-table page id used to hash metadata traffic across LUNs.
+ * @is_write: false=read, true=write.
+ *
+ * Returns end-to-end latency (queueing + service) for this metadata op.
+ */
+uint64_t femu_ftl_advance_l3_meta_io(struct ssd *ssd, uint64_t ptid,
+                                     bool is_write);
+
 #ifdef FEMU_DEBUG_FTL
 #define ftl_debug(fmt, ...) \
     do { printf("[FEMU] FTL-Dbg: " fmt, ## __VA_ARGS__); } while (0)
