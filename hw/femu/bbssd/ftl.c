@@ -75,7 +75,7 @@ static uint64_t wb_direct_fallback_write(struct ssd *ssd, NvmeRequest *req)
 static void wb_try_flush_queue(struct ssd *ssd, uint16_t qid)
 {
     // log
-    ftl_log("Try flush WB queue: qid=%u\n", qid);
+    // ftl_log("Try flush WB queue: qid=%u\n", qid);
     FemuCtrl *n = ssd->n;
     FemuWbLocal *l;
     struct ssdparams *spp = &ssd->sp;

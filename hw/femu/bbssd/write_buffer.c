@@ -4,7 +4,7 @@
 #include "qemu/queue.h"
 
 #ifndef FEMU_WB_PERF_ENABLE
-#define FEMU_WB_PERF_ENABLE 1
+#define FEMU_WB_PERF_ENABLE 0
 #endif
 
 typedef struct QEMU_PACKED FemuWbD5BatchEntry {
@@ -815,8 +815,8 @@ bool femu_wb_stage_write_req(struct ssd *ssd, NvmeRequest *req,
         n->wb.mcp_full_cnt++;
         l->fallback_cnt++;
         n->wb.fallback_cnt++;
-        femu_debug("WB fallback(write): qid=%u cmd_id=%u mcp_free=%u need=%u\n",
-                 qid, cmd_id, l->mcp_free_cnt, seg_cnt);
+        // femu_debug("WB fallback(write): qid=%u cmd_id=%u mcp_free=%u need=%u\n",
+        //          qid, cmd_id, l->mcp_free_cnt, seg_cnt);
         goto out_unlock;
     }
 
@@ -869,9 +869,9 @@ bool femu_wb_stage_write_req(struct ssd *ssd, NvmeRequest *req,
         prp_off = (uint32_t)((ov_start - req_start_sec) * secsz);
 
         if (!wb_alloc_space_locked(l, seg_len, &rel_off)) {
-            femu_log("WB fallback(write): qid=%u cmd_id=%u alloc failed len=%u used=%" PRIu64
-                     "/%" PRIu64 "\n",
-                     qid, cmd_id, seg_len, l->used, l->wb_bytes);
+            // femu_log("WB fallback(write): qid=%u cmd_id=%u alloc failed len=%u used=%" PRIu64
+            //          "/%" PRIu64 "\n",
+            //          qid, cmd_id, seg_len, l->used, l->wb_bytes);
             l->fallback_cnt++;
             n->wb.fallback_cnt++;
             goto rollback;
@@ -1868,11 +1868,11 @@ static void *femu_wb_flush_monitor_thread(void *opaque)
             if (l->wb_bytes && l->used * 100ULL >=
                 l->wb_bytes * n->cfg_wb_flush_watermark_pct) {
                 // log一下
-                femu_log("WB flush hint: qid=%u wb_used=%" PRIu64 " wb_total_bytes=%" PRIu64
-                         " used_pct=%" PRIu64 "%% idle_rounds=%u\n",
-                         qid, l->used, l->wb_bytes,
-                         (uint64_t)(l->wb_bytes ? (l->used * 100ULL / l->wb_bytes) : 0),
-                         l->idle_rounds);
+                // femu_log("WB flush hint: qid=%u wb_used=%" PRIu64 " wb_total_bytes=%" PRIu64
+                //          " used_pct=%" PRIu64 "%% idle_rounds=%u\n",
+                //          qid, l->used, l->wb_bytes,
+                //          (uint64_t)(l->wb_bytes ? (l->used * 100ULL / l->wb_bytes) : 0),
+                //          l->idle_rounds);
                 kick = true;
             }
             if (l->used && l->idle_rounds >= l->idle_rounds_threshold) {
