@@ -160,6 +160,8 @@ typedef struct FemuWriteBuffer {
 
     uint64_t kva_push_cnt;
     uint64_t copy_done_notify_cnt;
+    uint64_t copy_done_batch_calls;
+    uint64_t copy_done_batch_entries;
     uint64_t read_done_notify_cnt;
 
     uint64_t idx_hits;
@@ -186,6 +188,8 @@ typedef struct FemuWriteBuffer {
     uint64_t perf_stage_bytes;
 
     uint64_t perf_copy_done_calls;
+    uint64_t perf_copy_batch_calls;
+    uint64_t perf_copy_batch_entries;
     uint64_t perf_copy_done_ns;
     uint64_t perf_copy_done_segs;
     uint64_t perf_copy_lock_wait_ns;
@@ -217,6 +221,8 @@ typedef struct FemuWriteBuffer {
     uint64_t perf_last_stage_ns;
     uint64_t perf_last_stage_bytes;
     uint64_t perf_last_copy_done_calls;
+    uint64_t perf_last_copy_batch_calls;
+    uint64_t perf_last_copy_batch_entries;
     uint64_t perf_last_copy_done_ns;
     uint64_t perf_last_copy_done_segs;
     uint64_t perf_last_copy_lock_wait_ns;
