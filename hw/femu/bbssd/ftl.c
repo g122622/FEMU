@@ -74,9 +74,14 @@ static uint64_t wb_direct_fallback_write(struct ssd *ssd, NvmeRequest *req)
 
 static void wb_try_flush_queue(struct ssd *ssd, uint16_t qid)
 {
+    // log
+    ftl_log("Try flush WB queue: qid=%u\n", qid);
     FemuCtrl *n = ssd->n;
     FemuWbLocal *l;
     struct ssdparams *spp = &ssd->sp;
+    uint64_t t0 = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    uint64_t local_flush_segs = 0;
+    uint64_t local_flush_bytes = 0;
 
     if (!n->wb.layout_ready || !n->wb.wb_enabled || !n->wb.locals ||
         !qid || qid > n->wb.nr_queues) {
@@ -142,6 +147,8 @@ static void wb_try_flush_queue(struct ssd *ssd, uint16_t qid)
             l->flush_bytes += seg->len;
             n->wb.flush_bytes += seg->len;
             n->wb.flush_done_cnt++;
+            local_flush_segs++;
+            local_flush_bytes += seg->len;
         }
 
         if (seg->indexed && seg->rbn && femu_rb_refcnt_read(seg->rbn) == 0) {
@@ -163,6 +170,11 @@ static void wb_try_flush_queue(struct ssd *ssd, uint16_t qid)
         break;
     }
     qemu_mutex_unlock(&l->lpn_index_lock);
+
+    n->wb.perf_flush_calls++;
+    n->wb.perf_flush_ns += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t0;
+    n->wb.perf_flush_segs += local_flush_segs;
+    n->wb.perf_flush_bytes += local_flush_bytes;
 }
 
 static inline struct ppa get_maptbl_ent(struct ssd *ssd, uint64_t lpn)

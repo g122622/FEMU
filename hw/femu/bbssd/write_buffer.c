@@ -1,6 +1,7 @@
 #include "write_buffer.h"
 #include "ftl.h"
 #include "hmb.h"
+#include "qemu/queue.h"
 
 typedef struct FemuWbNotifyArgs {
     uint32_t cmd_id;
@@ -80,6 +81,100 @@ static inline uint64_t wb_align_up(uint64_t v, uint64_t a)
 static inline uint64_t wb_align_down(uint64_t v, uint64_t a)
 {
     return (v / a) * a;
+}
+
+static void wb_perf_log_if_due(FemuCtrl *n)
+{
+    FemuWriteBuffer *wb = &n->wb;
+    uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    const uint64_t interval_ns = 1000000000ULL;
+    uint64_t d_copy_calls, d_copy_ns, d_copy_segs;
+    uint64_t d_copy_lock_wait_ns, d_copy_lock_hold_ns;
+    uint64_t d_copy_lookup_ns, d_copy_mcp_release_ns, d_copy_loop_ns;
+    uint64_t d_copy_mirror_ns, d_copy_index_ns, d_copy_reclaim_ns;
+    uint64_t d_copy_remove_track_ns;
+    uint64_t d_copy_trimmed_segs, d_copy_mirror_fail_segs;
+    uint64_t d_copy_keep_old_busy, d_copy_insert_fail;
+
+    if (!wb->perf_last_log_ns) {
+        wb->perf_last_log_ns = now;
+        wb->perf_last_copy_done_calls = wb->perf_copy_done_calls;
+        wb->perf_last_copy_done_ns = wb->perf_copy_done_ns;
+        wb->perf_last_copy_done_segs = wb->perf_copy_done_segs;
+        wb->perf_last_copy_lock_wait_ns = wb->perf_copy_lock_wait_ns;
+        wb->perf_last_copy_lock_hold_ns = wb->perf_copy_lock_hold_ns;
+        wb->perf_last_copy_lookup_ns = wb->perf_copy_lookup_ns;
+        wb->perf_last_copy_mcp_release_ns = wb->perf_copy_mcp_release_ns;
+        wb->perf_last_copy_loop_ns = wb->perf_copy_loop_ns;
+        wb->perf_last_copy_mirror_ns = wb->perf_copy_mirror_ns;
+        wb->perf_last_copy_index_ns = wb->perf_copy_index_ns;
+        wb->perf_last_copy_reclaim_ns = wb->perf_copy_reclaim_ns;
+        wb->perf_last_copy_remove_track_ns = wb->perf_copy_remove_track_ns;
+        wb->perf_last_copy_trimmed_segs = wb->perf_copy_trimmed_segs;
+        wb->perf_last_copy_mirror_fail_segs = wb->perf_copy_mirror_fail_segs;
+        wb->perf_last_copy_keep_old_busy = wb->perf_copy_keep_old_busy;
+        wb->perf_last_copy_insert_fail = wb->perf_copy_insert_fail;
+        return;
+    }
+
+    if (now - wb->perf_last_log_ns < interval_ns) {
+        return;
+    }
+
+    d_copy_calls = wb->perf_copy_done_calls - wb->perf_last_copy_done_calls;
+    d_copy_ns = wb->perf_copy_done_ns - wb->perf_last_copy_done_ns;
+    d_copy_segs = wb->perf_copy_done_segs - wb->perf_last_copy_done_segs;
+    d_copy_lock_wait_ns = wb->perf_copy_lock_wait_ns - wb->perf_last_copy_lock_wait_ns;
+    d_copy_lock_hold_ns = wb->perf_copy_lock_hold_ns - wb->perf_last_copy_lock_hold_ns;
+    d_copy_lookup_ns = wb->perf_copy_lookup_ns - wb->perf_last_copy_lookup_ns;
+    d_copy_mcp_release_ns = wb->perf_copy_mcp_release_ns - wb->perf_last_copy_mcp_release_ns;
+    d_copy_loop_ns = wb->perf_copy_loop_ns - wb->perf_last_copy_loop_ns;
+    d_copy_mirror_ns = wb->perf_copy_mirror_ns - wb->perf_last_copy_mirror_ns;
+    d_copy_index_ns = wb->perf_copy_index_ns - wb->perf_last_copy_index_ns;
+    d_copy_reclaim_ns = wb->perf_copy_reclaim_ns - wb->perf_last_copy_reclaim_ns;
+    d_copy_remove_track_ns = wb->perf_copy_remove_track_ns - wb->perf_last_copy_remove_track_ns;
+    d_copy_trimmed_segs = wb->perf_copy_trimmed_segs - wb->perf_last_copy_trimmed_segs;
+    d_copy_mirror_fail_segs = wb->perf_copy_mirror_fail_segs - wb->perf_last_copy_mirror_fail_segs;
+    d_copy_keep_old_busy = wb->perf_copy_keep_old_busy - wb->perf_last_copy_keep_old_busy;
+    d_copy_insert_fail = wb->perf_copy_insert_fail - wb->perf_last_copy_insert_fail;
+
+    femu_log("WB copy_done perf(1s): calls=%" PRIu64 " segs=%" PRIu64
+             " avg=%.2fus | lock_wait=%.2fus lock_hold=%.2fus"
+             " lookup=%.2fus mcp_release=%.2fus loop=%.2fus"
+             " mirror=%.2fus index=%.2fus reclaim=%.2fus rm_track=%.2fus"
+             " | trimmed=%" PRIu64 " mirror_fail=%" PRIu64
+             " keep_old_busy=%" PRIu64 " insert_fail=%" PRIu64 "\n",
+             d_copy_calls, d_copy_segs,
+             d_copy_calls ? (double)d_copy_ns / (double)d_copy_calls / 1000.0 : 0.0,
+             d_copy_calls ? (double)d_copy_lock_wait_ns / (double)d_copy_calls / 1000.0 : 0.0,
+             d_copy_calls ? (double)d_copy_lock_hold_ns / (double)d_copy_calls / 1000.0 : 0.0,
+             d_copy_calls ? (double)d_copy_lookup_ns / (double)d_copy_calls / 1000.0 : 0.0,
+             d_copy_calls ? (double)d_copy_mcp_release_ns / (double)d_copy_calls / 1000.0 : 0.0,
+             d_copy_calls ? (double)d_copy_loop_ns / (double)d_copy_calls / 1000.0 : 0.0,
+             d_copy_calls ? (double)d_copy_mirror_ns / (double)d_copy_calls / 1000.0 : 0.0,
+             d_copy_calls ? (double)d_copy_index_ns / (double)d_copy_calls / 1000.0 : 0.0,
+             d_copy_calls ? (double)d_copy_reclaim_ns / (double)d_copy_calls / 1000.0 : 0.0,
+             d_copy_calls ? (double)d_copy_remove_track_ns / (double)d_copy_calls / 1000.0 : 0.0,
+             d_copy_trimmed_segs, d_copy_mirror_fail_segs,
+             d_copy_keep_old_busy, d_copy_insert_fail);
+
+    wb->perf_last_log_ns = now;
+    wb->perf_last_copy_done_calls = wb->perf_copy_done_calls;
+    wb->perf_last_copy_done_ns = wb->perf_copy_done_ns;
+    wb->perf_last_copy_done_segs = wb->perf_copy_done_segs;
+    wb->perf_last_copy_lock_wait_ns = wb->perf_copy_lock_wait_ns;
+    wb->perf_last_copy_lock_hold_ns = wb->perf_copy_lock_hold_ns;
+    wb->perf_last_copy_lookup_ns = wb->perf_copy_lookup_ns;
+    wb->perf_last_copy_mcp_release_ns = wb->perf_copy_mcp_release_ns;
+    wb->perf_last_copy_loop_ns = wb->perf_copy_loop_ns;
+    wb->perf_last_copy_mirror_ns = wb->perf_copy_mirror_ns;
+    wb->perf_last_copy_index_ns = wb->perf_copy_index_ns;
+    wb->perf_last_copy_reclaim_ns = wb->perf_copy_reclaim_ns;
+    wb->perf_last_copy_remove_track_ns = wb->perf_copy_remove_track_ns;
+    wb->perf_last_copy_trimmed_segs = wb->perf_copy_trimmed_segs;
+    wb->perf_last_copy_mirror_fail_segs = wb->perf_copy_mirror_fail_segs;
+    wb->perf_last_copy_keep_old_busy = wb->perf_copy_keep_old_busy;
+    wb->perf_last_copy_insert_fail = wb->perf_copy_insert_fail;
 }
 
 static void femu_wb_disable_with_reason(FemuCtrl *n, const char *reason)
@@ -289,6 +384,13 @@ static void wb_mcp_release_locked(FemuWbLocal *l, uint32_t *slots,
 static void wb_flush_q_insert_sorted_locked(FemuWbLocal *l, FemuWbSeg *seg)
 {
     FemuWbSeg *it;
+    FemuWbSeg *tail;
+
+    tail = QTAILQ_LAST(&l->flush_q);
+    if (!tail || seg->alloc_seq >= tail->alloc_seq) {
+        QTAILQ_INSERT_TAIL(&l->flush_q, seg, entry);
+        return;
+    }
 
     QTAILQ_FOREACH(it, &l->flush_q, entry) {
         if (seg->alloc_seq < it->alloc_seq) {
@@ -526,6 +628,9 @@ bool femu_wb_stage_write_req(struct ssd *ssd, NvmeRequest *req,
     uint64_t snap_head, snap_tail, snap_used;
     uint32_t snap_mcp_head, snap_mcp_tail, snap_mcp_free;
     bool staged_ok = false;
+    uint64_t t0 = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+
+    n->wb.perf_stage_calls++;
 
     if (!femu_wb_should_candidate_write(n) || !n->wb.locals) {
         return false;
@@ -716,6 +821,11 @@ rollback:
 
 out_unlock:
     qemu_mutex_unlock(&l->lpn_index_lock);
+    n->wb.perf_stage_ns += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t0;
+    if (staged_ok) {
+        n->wb.perf_stage_ok++;
+        n->wb.perf_stage_bytes += data_size;
+    }
     return staged_ok;
 }
 
@@ -1056,6 +1166,23 @@ uint16_t femu_wb_io_notify_copy_done(FemuCtrl *n, NvmeCmd *cmd,
     FemuWbNotifyArgs args = {0};
     FemuWbLocal *l;
     FemuWbCmdTrack *track;
+    uint64_t t0 = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    uint64_t t_lock_req;
+    uint64_t t_lock_acquired;
+    uint64_t t_part;
+    uint64_t local_lock_wait_ns = 0;
+    uint64_t local_lock_hold_ns = 0;
+    uint64_t local_lookup_ns = 0;
+    uint64_t local_mcp_release_ns = 0;
+    uint64_t local_loop_ns = 0;
+    uint64_t local_mirror_ns = 0;
+    uint64_t local_index_ns = 0;
+    uint64_t local_reclaim_ns = 0;
+    uint64_t local_remove_track_ns = 0;
+    uint64_t local_trimmed_segs = 0;
+    uint64_t local_mirror_fail_segs = 0;
+    uint64_t local_keep_old_busy = 0;
+    uint64_t local_insert_fail = 0;
 
     if (!n->exp_enable_wb) {
         req->status = NVME_INVALID_OPCODE | NVME_DNR;
@@ -1074,11 +1201,22 @@ uint16_t femu_wb_io_notify_copy_done(FemuCtrl *n, NvmeCmd *cmd,
     }
 
     l = &n->wb.locals[args.qid];
+    t_lock_req = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
     qemu_mutex_lock(&l->lpn_index_lock);
+    t_lock_acquired = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    local_lock_wait_ns = t_lock_acquired - t_lock_req;
 
+    t_lock_req = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
     track = wb_lookup_cmd_track_locked(l, args.cmd_id);
+    local_lookup_ns += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_lock_req;
     if (!track || track->type != FEMU_WB_CMD_TRACK_WRITE) {
+        local_lock_hold_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_lock_acquired;
         qemu_mutex_unlock(&l->lpn_index_lock);
+
+        n->wb.perf_copy_lock_wait_ns += local_lock_wait_ns;
+        n->wb.perf_copy_lock_hold_ns += local_lock_hold_ns;
+        n->wb.perf_copy_lookup_ns += local_lookup_ns;
+
         femu_log("WB 0xd5 COPY_DONE: no pending write cmd_id=%u on qid=%u\n",
                  args.cmd_id, args.qid);
         req->status = NVME_SUCCESS;
@@ -1086,13 +1224,22 @@ uint16_t femu_wb_io_notify_copy_done(FemuCtrl *n, NvmeCmd *cmd,
     }
 
     if (args.seg_cnt > track->seg_cnt) {
+        local_lock_hold_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_lock_acquired;
         qemu_mutex_unlock(&l->lpn_index_lock);
+
+        n->wb.perf_copy_lock_wait_ns += local_lock_wait_ns;
+        n->wb.perf_copy_lock_hold_ns += local_lock_hold_ns;
+        n->wb.perf_copy_lookup_ns += local_lookup_ns;
+
         req->status = NVME_INVALID_FIELD | NVME_DNR;
         return NVME_SUCCESS;
     }
 
+    t_lock_req = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
     wb_mcp_release_locked(l, track->mcp_slots, args.seg_cnt);
+    local_mcp_release_ns += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_lock_req;
 
+    t_lock_req = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
     for (uint32_t i = 0; i < args.seg_cnt; i++) {
         FemuWbSeg *seg = track->segs[i];
         FemuRbNode *old;
@@ -1105,6 +1252,7 @@ uint16_t femu_wb_io_notify_copy_done(FemuCtrl *n, NvmeCmd *cmd,
         // 为了保证trim命令正确性，
         // 0xd5 COPY_DONE 对 tombstone/trimmed 段不再镜像 backend、不再入索引，仅回收空间
         if (seg->trimmed || wb_lpn_tombstoned_locked(l, seg->lpn)) {
+            local_trimmed_segs++;
             seg->state = FEMU_WB_SEG_FLUSHED;
             seg->indexed = false;
             seg->rbn = NULL;
@@ -1112,17 +1260,22 @@ uint16_t femu_wb_io_notify_copy_done(FemuCtrl *n, NvmeCmd *cmd,
             continue;
         }
 
+        t_part = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
         if (!wb_sync_seg_to_backend(n, seg)) {
+            local_mirror_fail_segs++;
             femu_err("WB 0xd5: mirror-to-backend failed qid=%u cmd_id=%u lpn=%" PRIu64
                      " off=0x%" PRIx64 " len=%u\n",
                      args.qid, args.cmd_id, seg->lpn, seg->hmb_off, seg->len);
         }
+        local_mirror_ns += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_part;
 
         seg->state = FEMU_WB_SEG_COPY_DONE;
 
+        t_part = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
         old = femu_rb_find(&l->lpn_index, seg->lpn);
         if (old) {
             if (femu_rb_refcnt_read(old) != 0) {
+                local_keep_old_busy++;
                 femu_log("WB 0xd5: keep old LPN=%" PRIu64 " due refcnt=%d\n",
                          seg->lpn, femu_rb_refcnt_read(old));
                 seg->indexed = false;
@@ -1148,19 +1301,47 @@ uint16_t femu_wb_io_notify_copy_done(FemuCtrl *n, NvmeCmd *cmd,
                     seg->indexed = true;
                     seg->rbn = node;
                 } else {
+                    local_insert_fail++;
                     g_free(node);
                 }
+            } else {
+                local_insert_fail++;
             }
         }
+        local_index_ns += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_part;
 
         wb_flush_q_insert_sorted_locked(l, seg);
     }
+    local_loop_ns += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_lock_req;
 
+    t_lock_req = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
     wb_remove_cmd_track_locked(l, args.cmd_id);
+    local_remove_track_ns += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_lock_req;
+
+    t_lock_req = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
     wb_try_reclaim_head_locked(l);
+    local_reclaim_ns += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_lock_req;
+
+    local_lock_hold_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_lock_acquired;
     qemu_mutex_unlock(&l->lpn_index_lock);
 
     n->wb.copy_done_notify_cnt++;
+    n->wb.perf_copy_done_calls++;
+    n->wb.perf_copy_done_ns += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t0;
+    n->wb.perf_copy_done_segs += args.seg_cnt;
+    n->wb.perf_copy_lock_wait_ns += local_lock_wait_ns;
+    n->wb.perf_copy_lock_hold_ns += local_lock_hold_ns;
+    n->wb.perf_copy_lookup_ns += local_lookup_ns;
+    n->wb.perf_copy_mcp_release_ns += local_mcp_release_ns;
+    n->wb.perf_copy_loop_ns += local_loop_ns;
+    n->wb.perf_copy_mirror_ns += local_mirror_ns;
+    n->wb.perf_copy_index_ns += local_index_ns;
+    n->wb.perf_copy_reclaim_ns += local_reclaim_ns;
+    n->wb.perf_copy_remove_track_ns += local_remove_track_ns;
+    n->wb.perf_copy_trimmed_segs += local_trimmed_segs;
+    n->wb.perf_copy_mirror_fail_segs += local_mirror_fail_segs;
+    n->wb.perf_copy_keep_old_busy += local_keep_old_busy;
+    n->wb.perf_copy_insert_fail += local_insert_fail;
 
     femu_debug("WB 0xd5 COPY_DONE: qid=%u cmd_id=%u seg_cnt=%u\n",
              args.qid, args.cmd_id, args.seg_cnt);
@@ -1174,6 +1355,7 @@ uint16_t femu_wb_io_notify_read_done(FemuCtrl *n, NvmeCmd *cmd,
     FemuWbNotifyArgs args = {0};
     FemuWbLocal *l;
     FemuWbCmdTrack *track;
+    uint64_t t0 = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
 
     if (!n->exp_enable_wb) {
         req->status = NVME_INVALID_OPCODE | NVME_DNR;
@@ -1239,6 +1421,9 @@ uint16_t femu_wb_io_notify_read_done(FemuCtrl *n, NvmeCmd *cmd,
     qemu_mutex_unlock(&l->lpn_index_lock);
 
     n->wb.read_done_notify_cnt++;
+    n->wb.perf_read_done_calls++;
+    n->wb.perf_read_done_ns += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t0;
+    n->wb.perf_read_done_segs += args.seg_cnt;
 
     femu_debug("WB 0xd9 READ_DONE: qid=%u cmd_id=%u seg_cnt=%u\n",
              args.qid, args.cmd_id, args.seg_cnt);
@@ -1513,6 +1698,12 @@ static void *femu_wb_flush_monitor_thread(void *opaque)
 
             if (l->wb_bytes && l->used * 100ULL >=
                 l->wb_bytes * n->cfg_wb_flush_watermark_pct) {
+                // log一下
+                femu_log("WB flush hint: qid=%u wb_used=%" PRIu64 " wb_total_bytes=%" PRIu64
+                         " used_pct=%" PRIu64 "%% idle_rounds=%u\n",
+                         qid, l->used, l->wb_bytes,
+                         (uint64_t)(l->wb_bytes ? (l->used * 100ULL / l->wb_bytes) : 0),
+                         l->idle_rounds);
                 kick = true;
             }
             if (l->used && l->idle_rounds >= l->idle_rounds_threshold) {
@@ -1526,6 +1717,8 @@ static void *femu_wb_flush_monitor_thread(void *opaque)
 
             qemu_mutex_unlock(&l->lpn_index_lock);
         }
+
+        wb_perf_log_if_due(n);
 
         wb->flush_thread_rounds++;
         usleep(1000);
