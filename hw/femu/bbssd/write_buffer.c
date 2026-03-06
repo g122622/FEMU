@@ -3,6 +3,10 @@
 #include "hmb.h"
 #include "qemu/queue.h"
 
+#ifndef FEMU_WB_PERF_ENABLE
+#define FEMU_WB_PERF_ENABLE 1
+#endif
+
 typedef struct QEMU_PACKED FemuWbD5BatchEntry {
     uint16_t cmd_id;
     uint16_t rsvd0;
@@ -109,6 +113,7 @@ static inline uint64_t wb_align_down(uint64_t v, uint64_t a)
     return (v / a) * a;
 }
 
+#if FEMU_WB_PERF_ENABLE
 static void wb_perf_log_if_due(FemuCtrl *n)
 {
     FemuWriteBuffer *wb = &n->wb;
@@ -213,6 +218,12 @@ static void wb_perf_log_if_due(FemuCtrl *n)
     wb->perf_last_copy_keep_old_busy = wb->perf_copy_keep_old_busy;
     wb->perf_last_copy_insert_fail = wb->perf_copy_insert_fail;
 }
+#else
+static inline void wb_perf_log_if_due(FemuCtrl *n)
+{
+    (void)n;
+}
+#endif
 
 static void femu_wb_disable_with_reason(FemuCtrl *n, const char *reason)
 {
@@ -767,7 +778,9 @@ bool femu_wb_stage_write_req(struct ssd *ssd, NvmeRequest *req,
     bool staged_ok = false;
     uint64_t t0 = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
 
+#if FEMU_WB_PERF_ENABLE
     n->wb.perf_stage_calls++;
+#endif
 
     if (!femu_wb_should_candidate_write(n) || !n->wb.locals) {
         return false;
@@ -958,11 +971,17 @@ rollback:
 
 out_unlock:
     qemu_mutex_unlock(&l->lpn_index_lock);
+#if FEMU_WB_PERF_ENABLE
     n->wb.perf_stage_ns += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t0;
     if (staged_ok) {
         n->wb.perf_stage_ok++;
         n->wb.perf_stage_bytes += data_size;
     }
+#endif
+
+#if !FEMU_WB_PERF_ENABLE
+    (void)t0;
+#endif
     return staged_ok;
 }
 
@@ -1454,6 +1473,7 @@ uint16_t femu_wb_io_notify_copy_done(FemuCtrl *n, NvmeCmd *cmd,
     n->wb.copy_done_notify_cnt += st.done_entries;
     n->wb.copy_done_batch_calls++;
     n->wb.copy_done_batch_entries += args.batch_cnt;
+#if FEMU_WB_PERF_ENABLE
     n->wb.perf_copy_done_calls += st.done_entries;
     n->wb.perf_copy_batch_calls++;
     n->wb.perf_copy_batch_entries += args.batch_cnt;
@@ -1472,6 +1492,11 @@ uint16_t femu_wb_io_notify_copy_done(FemuCtrl *n, NvmeCmd *cmd,
     n->wb.perf_copy_mirror_fail_segs += st.mirror_fail_segs;
     n->wb.perf_copy_keep_old_busy += st.keep_old_busy;
     n->wb.perf_copy_insert_fail += st.insert_fail;
+#endif
+
+#if !FEMU_WB_PERF_ENABLE
+    (void)t0;
+#endif
 
     if (st.bad_entries) {
         femu_log("WB 0xd5 COPY_DONE batch: qid=%u bad_entries=%" PRIu64 "/%u\n",
@@ -1559,9 +1584,15 @@ uint16_t femu_wb_io_notify_read_done(FemuCtrl *n, NvmeCmd *cmd,
     qemu_mutex_unlock(&l->lpn_index_lock);
 
     n->wb.read_done_notify_cnt++;
+#if FEMU_WB_PERF_ENABLE
     n->wb.perf_read_done_calls++;
     n->wb.perf_read_done_ns += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t0;
     n->wb.perf_read_done_segs += args.seg_cnt;
+#endif
+
+#if !FEMU_WB_PERF_ENABLE
+    (void)t0;
+#endif
 
     femu_debug("WB 0xd9 READ_DONE: qid=%u cmd_id=%u seg_cnt=%u\n",
              args.qid, args.cmd_id, args.seg_cnt);
