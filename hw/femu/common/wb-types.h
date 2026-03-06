@@ -127,6 +127,7 @@ typedef struct FemuWbLocal {
     uint32_t idle_rounds;
     uint32_t idle_rounds_threshold;
     bool flush_hint;
+    uint64_t flush_next_issue_ns;
 
     uint64_t idx_hits;
     uint64_t idx_misses;

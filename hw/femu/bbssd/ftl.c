@@ -93,8 +93,13 @@ static void wb_try_flush_queue(struct ssd *ssd, uint16_t qid)
     qemu_mutex_lock(&l->lpn_index_lock);
     while (1) {
         FemuWbSeg *seg = QTAILQ_FIRST(&l->flush_q);
+        uint64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
 
         if (!seg) {
+            break;
+        }
+
+        if (l->flush_next_issue_ns && now_ns < l->flush_next_issue_ns) {
             break;
         }
 
@@ -136,8 +141,11 @@ static void wb_try_flush_queue(struct ssd *ssd, uint16_t qid)
 
             swr.type = USER_IO;
             swr.cmd = NAND_WRITE;
-            swr.stime = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
-            (void)ssd_advance_status(ssd, &newppa, &swr);
+            swr.stime = now_ns;
+            {
+                uint64_t nand_lat = ssd_advance_status(ssd, &newppa, &swr);
+                l->flush_next_issue_ns = swr.stime + nand_lat;
+            }
 
             seg->state = FEMU_WB_SEG_FLUSHED;
             if (seg->rbn) {
