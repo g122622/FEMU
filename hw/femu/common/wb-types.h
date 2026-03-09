@@ -127,7 +127,6 @@ typedef struct FemuWbLocal {
     uint32_t idle_rounds;
     uint32_t idle_rounds_threshold;
     bool flush_hint;
-    uint64_t flush_next_issue_ns;
 
     uint64_t idx_hits;
     uint64_t idx_misses;
@@ -161,8 +160,6 @@ typedef struct FemuWriteBuffer {
 
     uint64_t kva_push_cnt;
     uint64_t copy_done_notify_cnt;
-    uint64_t copy_done_batch_calls;
-    uint64_t copy_done_batch_entries;
     uint64_t read_done_notify_cnt;
 
     uint64_t idx_hits;
@@ -181,71 +178,6 @@ typedef struct FemuWriteBuffer {
     uint64_t flush_kick_cnt;
     uint64_t flush_done_cnt;
     uint64_t wb_bypass_cnt;
-
-    /* Protocol-chain perf counters (controller side) */
-    uint64_t perf_stage_calls;
-    uint64_t perf_stage_ok;
-    uint64_t perf_stage_ns;
-    uint64_t perf_stage_bytes;
-
-    uint64_t perf_copy_done_calls;
-    uint64_t perf_copy_batch_calls;
-    uint64_t perf_copy_batch_entries;
-    uint64_t perf_copy_done_ns;
-    uint64_t perf_copy_done_segs;
-    uint64_t perf_copy_lock_wait_ns;
-    uint64_t perf_copy_lock_hold_ns;
-    uint64_t perf_copy_lookup_ns;
-    uint64_t perf_copy_mcp_release_ns;
-    uint64_t perf_copy_loop_ns;
-    uint64_t perf_copy_mirror_ns;
-    uint64_t perf_copy_index_ns;
-    uint64_t perf_copy_reclaim_ns;
-    uint64_t perf_copy_remove_track_ns;
-    uint64_t perf_copy_trimmed_segs;
-    uint64_t perf_copy_mirror_fail_segs;
-    uint64_t perf_copy_keep_old_busy;
-    uint64_t perf_copy_insert_fail;
-
-    uint64_t perf_read_done_calls;
-    uint64_t perf_read_done_ns;
-    uint64_t perf_read_done_segs;
-
-    uint64_t perf_flush_calls;
-    uint64_t perf_flush_ns;
-    uint64_t perf_flush_segs;
-    uint64_t perf_flush_bytes;
-
-    uint64_t perf_last_log_ns;
-    uint64_t perf_last_stage_calls;
-    uint64_t perf_last_stage_ok;
-    uint64_t perf_last_stage_ns;
-    uint64_t perf_last_stage_bytes;
-    uint64_t perf_last_copy_done_calls;
-    uint64_t perf_last_copy_batch_calls;
-    uint64_t perf_last_copy_batch_entries;
-    uint64_t perf_last_copy_done_ns;
-    uint64_t perf_last_copy_done_segs;
-    uint64_t perf_last_copy_lock_wait_ns;
-    uint64_t perf_last_copy_lock_hold_ns;
-    uint64_t perf_last_copy_lookup_ns;
-    uint64_t perf_last_copy_mcp_release_ns;
-    uint64_t perf_last_copy_loop_ns;
-    uint64_t perf_last_copy_mirror_ns;
-    uint64_t perf_last_copy_index_ns;
-    uint64_t perf_last_copy_reclaim_ns;
-    uint64_t perf_last_copy_remove_track_ns;
-    uint64_t perf_last_copy_trimmed_segs;
-    uint64_t perf_last_copy_mirror_fail_segs;
-    uint64_t perf_last_copy_keep_old_busy;
-    uint64_t perf_last_copy_insert_fail;
-    uint64_t perf_last_read_done_calls;
-    uint64_t perf_last_read_done_ns;
-    uint64_t perf_last_read_done_segs;
-    uint64_t perf_last_flush_calls;
-    uint64_t perf_last_flush_ns;
-    uint64_t perf_last_flush_segs;
-    uint64_t perf_last_flush_bytes;
 } FemuWriteBuffer;
 
 #endif
