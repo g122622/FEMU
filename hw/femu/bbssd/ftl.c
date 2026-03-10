@@ -19,6 +19,118 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa,
 static void mark_page_invalid(struct ssd *ssd, struct ppa *ppa);
 static void mark_page_valid(struct ssd *ssd, struct ppa *ppa);
 
+#define FEMU_WB_OFF_PERF_LOG_PERIOD_NS   (1ULL * 1000 * 1000 * 1000)
+
+static inline bool femu_wb_off_l2p_perf_enabled(struct ssd *ssd)
+{
+    FemuCtrl *n = ssd->n;
+
+    return n->exp_enable_l2p_multilevel &&
+           (!n->exp_enable_wb || !n->wb.wb_enabled || n->wb.gate_waiting_kva_push);
+}
+
+static void femu_wb_off_l2p_perf_log_if_due(struct ssd *ssd)
+{
+    uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    uint64_t d_read_calls, d_read_bytes, d_read_lpns;
+    uint64_t d_read_wall_ns, d_read_model_lat_ns, d_read_meta_lat_ns;
+    uint64_t d_read_nand_lat_ns, d_read_unmapped_lpns;
+    uint64_t d_write_calls, d_write_bytes, d_write_lpns;
+    uint64_t d_write_wall_ns, d_write_model_lat_ns, d_write_meta_lat_ns;
+    uint64_t d_write_nand_lat_ns, d_write_gc_loops;
+
+    if (!femu_wb_off_l2p_perf_enabled(ssd)) {
+        return;
+    }
+
+    if (!ssd->wb_off_perf_last_log_ns) {
+        ssd->wb_off_perf_last_log_ns = now;
+        ssd->wb_off_perf_last_read_calls = ssd->wb_off_perf_read_calls;
+        ssd->wb_off_perf_last_read_bytes = ssd->wb_off_perf_read_bytes;
+        ssd->wb_off_perf_last_read_lpns = ssd->wb_off_perf_read_lpns;
+        ssd->wb_off_perf_last_read_wall_ns = ssd->wb_off_perf_read_wall_ns;
+        ssd->wb_off_perf_last_read_model_lat_ns = ssd->wb_off_perf_read_model_lat_ns;
+        ssd->wb_off_perf_last_read_meta_lat_ns = ssd->wb_off_perf_read_meta_lat_ns;
+        ssd->wb_off_perf_last_read_nand_lat_ns = ssd->wb_off_perf_read_nand_lat_ns;
+        ssd->wb_off_perf_last_read_unmapped_lpns = ssd->wb_off_perf_read_unmapped_lpns;
+        ssd->wb_off_perf_last_write_calls = ssd->wb_off_perf_write_calls;
+        ssd->wb_off_perf_last_write_bytes = ssd->wb_off_perf_write_bytes;
+        ssd->wb_off_perf_last_write_lpns = ssd->wb_off_perf_write_lpns;
+        ssd->wb_off_perf_last_write_wall_ns = ssd->wb_off_perf_write_wall_ns;
+        ssd->wb_off_perf_last_write_model_lat_ns = ssd->wb_off_perf_write_model_lat_ns;
+        ssd->wb_off_perf_last_write_meta_lat_ns = ssd->wb_off_perf_write_meta_lat_ns;
+        ssd->wb_off_perf_last_write_nand_lat_ns = ssd->wb_off_perf_write_nand_lat_ns;
+        ssd->wb_off_perf_last_write_gc_loops = ssd->wb_off_perf_write_gc_loops;
+        return;
+    }
+
+    if (now - ssd->wb_off_perf_last_log_ns < FEMU_WB_OFF_PERF_LOG_PERIOD_NS) {
+        return;
+    }
+
+    d_read_calls = ssd->wb_off_perf_read_calls - ssd->wb_off_perf_last_read_calls;
+    d_read_bytes = ssd->wb_off_perf_read_bytes - ssd->wb_off_perf_last_read_bytes;
+    d_read_lpns = ssd->wb_off_perf_read_lpns - ssd->wb_off_perf_last_read_lpns;
+    d_read_wall_ns = ssd->wb_off_perf_read_wall_ns - ssd->wb_off_perf_last_read_wall_ns;
+    d_read_model_lat_ns = ssd->wb_off_perf_read_model_lat_ns - ssd->wb_off_perf_last_read_model_lat_ns;
+    d_read_meta_lat_ns = ssd->wb_off_perf_read_meta_lat_ns - ssd->wb_off_perf_last_read_meta_lat_ns;
+    d_read_nand_lat_ns = ssd->wb_off_perf_read_nand_lat_ns - ssd->wb_off_perf_last_read_nand_lat_ns;
+    d_read_unmapped_lpns = ssd->wb_off_perf_read_unmapped_lpns - ssd->wb_off_perf_last_read_unmapped_lpns;
+
+    d_write_calls = ssd->wb_off_perf_write_calls - ssd->wb_off_perf_last_write_calls;
+    d_write_bytes = ssd->wb_off_perf_write_bytes - ssd->wb_off_perf_last_write_bytes;
+    d_write_lpns = ssd->wb_off_perf_write_lpns - ssd->wb_off_perf_last_write_lpns;
+    d_write_wall_ns = ssd->wb_off_perf_write_wall_ns - ssd->wb_off_perf_last_write_wall_ns;
+    d_write_model_lat_ns = ssd->wb_off_perf_write_model_lat_ns - ssd->wb_off_perf_last_write_model_lat_ns;
+    d_write_meta_lat_ns = ssd->wb_off_perf_write_meta_lat_ns - ssd->wb_off_perf_last_write_meta_lat_ns;
+    d_write_nand_lat_ns = ssd->wb_off_perf_write_nand_lat_ns - ssd->wb_off_perf_last_write_nand_lat_ns;
+    d_write_gc_loops = ssd->wb_off_perf_write_gc_loops - ssd->wb_off_perf_last_write_gc_loops;
+
+    if (d_read_calls || d_write_calls) {
+        femu_log("WB-off multilevel perf(1s) READ: calls=%" PRIu64
+                 " lpns=%" PRIu64 " bytes=%" PRIu64
+                 " avg_cpu=%.2fus avg_total_lat=%.2fus"
+                 " avg_meta_lat=%.2fus avg_nand_lat=%.2fus"
+                 " unmapped_lpns=%" PRIu64 "\n",
+                 d_read_calls, d_read_lpns, d_read_bytes,
+                 d_read_calls ? (double)d_read_wall_ns / (double)d_read_calls / 1000.0 : 0.0,
+                 d_read_calls ? (double)d_read_model_lat_ns / (double)d_read_calls / 1000.0 : 0.0,
+                 d_read_calls ? (double)d_read_meta_lat_ns / (double)d_read_calls / 1000.0 : 0.0,
+                 d_read_calls ? (double)d_read_nand_lat_ns / (double)d_read_calls / 1000.0 : 0.0,
+                 d_read_unmapped_lpns);
+
+        femu_log("WB-off multilevel perf(1s) WRITE: calls=%" PRIu64
+                 " lpns=%" PRIu64 " bytes=%" PRIu64
+                 " avg_cpu=%.2fus avg_total_lat=%.2fus"
+                 " avg_meta_lat=%.2fus avg_nand_lat=%.2fus"
+                 " gc_loops=%" PRIu64 "\n",
+                 d_write_calls, d_write_lpns, d_write_bytes,
+                 d_write_calls ? (double)d_write_wall_ns / (double)d_write_calls / 1000.0 : 0.0,
+                 d_write_calls ? (double)d_write_model_lat_ns / (double)d_write_calls / 1000.0 : 0.0,
+                 d_write_calls ? (double)d_write_meta_lat_ns / (double)d_write_calls / 1000.0 : 0.0,
+                 d_write_calls ? (double)d_write_nand_lat_ns / (double)d_write_calls / 1000.0 : 0.0,
+                 d_write_gc_loops);
+    }
+
+    ssd->wb_off_perf_last_log_ns = now;
+    ssd->wb_off_perf_last_read_calls = ssd->wb_off_perf_read_calls;
+    ssd->wb_off_perf_last_read_bytes = ssd->wb_off_perf_read_bytes;
+    ssd->wb_off_perf_last_read_lpns = ssd->wb_off_perf_read_lpns;
+    ssd->wb_off_perf_last_read_wall_ns = ssd->wb_off_perf_read_wall_ns;
+    ssd->wb_off_perf_last_read_model_lat_ns = ssd->wb_off_perf_read_model_lat_ns;
+    ssd->wb_off_perf_last_read_meta_lat_ns = ssd->wb_off_perf_read_meta_lat_ns;
+    ssd->wb_off_perf_last_read_nand_lat_ns = ssd->wb_off_perf_read_nand_lat_ns;
+    ssd->wb_off_perf_last_read_unmapped_lpns = ssd->wb_off_perf_read_unmapped_lpns;
+    ssd->wb_off_perf_last_write_calls = ssd->wb_off_perf_write_calls;
+    ssd->wb_off_perf_last_write_bytes = ssd->wb_off_perf_write_bytes;
+    ssd->wb_off_perf_last_write_lpns = ssd->wb_off_perf_write_lpns;
+    ssd->wb_off_perf_last_write_wall_ns = ssd->wb_off_perf_write_wall_ns;
+    ssd->wb_off_perf_last_write_model_lat_ns = ssd->wb_off_perf_write_model_lat_ns;
+    ssd->wb_off_perf_last_write_meta_lat_ns = ssd->wb_off_perf_write_meta_lat_ns;
+    ssd->wb_off_perf_last_write_nand_lat_ns = ssd->wb_off_perf_write_nand_lat_ns;
+    ssd->wb_off_perf_last_write_gc_loops = ssd->wb_off_perf_write_gc_loops;
+}
+
 static inline bool should_gc(struct ssd *ssd)
 {
     return (ssd->lm.free_line_cnt <= ssd->sp.gc_thres_lines);
@@ -980,6 +1092,10 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
     uint64_t lpn;
     uint64_t sublat, maxlat = 0;
     uint64_t meta_lat_sum = 0;
+    uint64_t unmapped_lpns = 0;
+    uint64_t total_lat;
+    bool wb_off_perf = femu_wb_off_l2p_perf_enabled(ssd);
+    uint64_t t0 = wb_off_perf ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
 
     if (end_lpn >= spp->tt_pgs) {
         ftl_err("start_lpn=%"PRIu64",tt_pgs=%d\n", start_lpn, ssd->sp.tt_pgs);
@@ -992,6 +1108,7 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
             //printf("%s,lpn(%" PRId64 ") not mapped to valid ppa\n", ssd->ssdname, lpn);
             //printf("Invalid ppa,ch:%d,lun:%d,blk:%d,pl:%d,pg:%d,sec:%d\n",
             //ppa.g.ch, ppa.g.lun, ppa.g.blk, ppa.g.pl, ppa.g.pg, ppa.g.sec);
+            unmapped_lpns++;
             continue;
         }
 
@@ -1003,7 +1120,21 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
         maxlat = (sublat > maxlat) ? sublat : maxlat;
     }
 
-    return meta_lat_sum + maxlat;
+    total_lat = meta_lat_sum + maxlat;
+
+    if (wb_off_perf) {
+        ssd->wb_off_perf_read_calls++;
+        ssd->wb_off_perf_read_bytes += (uint64_t)nsecs * spp->secsz;
+        ssd->wb_off_perf_read_lpns += end_lpn - start_lpn + 1;
+        ssd->wb_off_perf_read_wall_ns += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t0;
+        ssd->wb_off_perf_read_model_lat_ns += total_lat;
+        ssd->wb_off_perf_read_meta_lat_ns += meta_lat_sum;
+        ssd->wb_off_perf_read_nand_lat_ns += maxlat;
+        ssd->wb_off_perf_read_unmapped_lpns += unmapped_lpns;
+        femu_wb_off_l2p_perf_log_if_due(ssd);
+    }
+
+    return total_lat;
 }
 
 static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
@@ -1018,6 +1149,10 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
     uint64_t curlat = 0, maxlat = 0;
     uint64_t meta_lat_sum = 0;
     uint64_t meta_wlat;
+    uint64_t total_lat;
+    uint64_t gc_loops = 0;
+    bool wb_off_perf = femu_wb_off_l2p_perf_enabled(ssd);
+    uint64_t t0 = wb_off_perf ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
     int r;
 
     if (end_lpn >= spp->tt_pgs) {
@@ -1026,6 +1161,7 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
 
     while (should_gc_high(ssd)) {
         /* perform GC here until !should_gc(ssd) */
+        gc_loops++;
         r = do_gc(ssd, true);
         if (r == -1)
             break;
@@ -1063,7 +1199,21 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
         maxlat = (curlat > maxlat) ? curlat : maxlat;
     }
 
-    return meta_lat_sum + maxlat;
+    total_lat = meta_lat_sum + maxlat;
+
+    if (wb_off_perf) {
+        ssd->wb_off_perf_write_calls++;
+        ssd->wb_off_perf_write_bytes += (uint64_t)len * spp->secsz;
+        ssd->wb_off_perf_write_lpns += end_lpn - start_lpn + 1;
+        ssd->wb_off_perf_write_wall_ns += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t0;
+        ssd->wb_off_perf_write_model_lat_ns += total_lat;
+        ssd->wb_off_perf_write_meta_lat_ns += meta_lat_sum;
+        ssd->wb_off_perf_write_nand_lat_ns += maxlat;
+        ssd->wb_off_perf_write_gc_loops += gc_loops;
+        femu_wb_off_l2p_perf_log_if_due(ssd);
+    }
+
+    return total_lat;
 }
 
 static uint64_t ssd_trim(struct ssd *ssd, NvmeRequest *req)

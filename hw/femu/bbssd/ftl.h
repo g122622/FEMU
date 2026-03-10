@@ -239,6 +239,40 @@ struct ssd {
     uint64_t l2p_l2_last_hits;
     uint64_t l2p_l2_last_misses;
 
+    uint64_t wb_off_perf_last_log_ns;
+    uint64_t wb_off_perf_read_calls;
+    uint64_t wb_off_perf_read_bytes;
+    uint64_t wb_off_perf_read_lpns;
+    uint64_t wb_off_perf_read_wall_ns;
+    uint64_t wb_off_perf_read_model_lat_ns;
+    uint64_t wb_off_perf_read_meta_lat_ns;
+    uint64_t wb_off_perf_read_nand_lat_ns;
+    uint64_t wb_off_perf_read_unmapped_lpns;
+    uint64_t wb_off_perf_write_calls;
+    uint64_t wb_off_perf_write_bytes;
+    uint64_t wb_off_perf_write_lpns;
+    uint64_t wb_off_perf_write_wall_ns;
+    uint64_t wb_off_perf_write_model_lat_ns;
+    uint64_t wb_off_perf_write_meta_lat_ns;
+    uint64_t wb_off_perf_write_nand_lat_ns;
+    uint64_t wb_off_perf_write_gc_loops;
+    uint64_t wb_off_perf_last_read_calls;
+    uint64_t wb_off_perf_last_read_bytes;
+    uint64_t wb_off_perf_last_read_lpns;
+    uint64_t wb_off_perf_last_read_wall_ns;
+    uint64_t wb_off_perf_last_read_model_lat_ns;
+    uint64_t wb_off_perf_last_read_meta_lat_ns;
+    uint64_t wb_off_perf_last_read_nand_lat_ns;
+    uint64_t wb_off_perf_last_read_unmapped_lpns;
+    uint64_t wb_off_perf_last_write_calls;
+    uint64_t wb_off_perf_last_write_bytes;
+    uint64_t wb_off_perf_last_write_lpns;
+    uint64_t wb_off_perf_last_write_wall_ns;
+    uint64_t wb_off_perf_last_write_model_lat_ns;
+    uint64_t wb_off_perf_last_write_meta_lat_ns;
+    uint64_t wb_off_perf_last_write_nand_lat_ns;
+    uint64_t wb_off_perf_last_write_gc_loops;
+
     struct write_pointer wp;
     struct line_mgmt lm;
 

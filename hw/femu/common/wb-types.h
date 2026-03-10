@@ -160,6 +160,8 @@ typedef struct FemuWriteBuffer {
 
     uint64_t kva_push_cnt;
     uint64_t copy_done_notify_cnt;
+    uint64_t copy_done_batch_calls;
+    uint64_t copy_done_batch_entries;
     uint64_t read_done_notify_cnt;
 
     uint64_t idx_hits;
