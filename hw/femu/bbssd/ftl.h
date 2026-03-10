@@ -195,6 +195,24 @@ struct nand_cmd {
     int64_t stime; /* Coperd: request arrival time */
 };
 
+typedef struct FemuWbOffPerfSubStat {
+    uint64_t ftl_dequeue_ns;
+    uint64_t ftl_enqueue_ns;
+    uint64_t ftl_dispatch_ns;
+    uint64_t ftl_prepare_ns;
+    uint64_t read_lookup_cpu_ns;
+    uint64_t read_status_cpu_ns;
+    uint64_t write_gc_cpu_ns;
+    uint64_t write_trim_cpu_ns;
+    uint64_t write_lookup_cpu_ns;
+    uint64_t write_old_map_cpu_ns;
+    uint64_t write_map_cpu_ns;
+    uint64_t write_commit_cpu_ns;
+    uint64_t write_status_cpu_ns;
+    uint64_t write_copy_cpu_ns;
+    uint64_t write_copy_calls;
+} FemuWbOffPerfSubStat;
+
 struct ssd {
     char *ssdname;
     struct ssdparams sp;
@@ -272,6 +290,9 @@ struct ssd {
     uint64_t wb_off_perf_last_write_meta_lat_ns;
     uint64_t wb_off_perf_last_write_nand_lat_ns;
     uint64_t wb_off_perf_last_write_gc_loops;
+
+    FemuWbOffPerfSubStat wb_off_perf_sub;
+    FemuWbOffPerfSubStat wb_off_perf_sub_last;
 
     struct write_pointer wp;
     struct line_mgmt lm;

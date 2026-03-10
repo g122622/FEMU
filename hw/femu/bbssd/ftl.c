@@ -32,12 +32,21 @@ static inline bool femu_wb_off_l2p_perf_enabled(struct ssd *ssd)
 static void femu_wb_off_l2p_perf_log_if_due(struct ssd *ssd)
 {
     uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    uint64_t total_calls;
     uint64_t d_read_calls, d_read_bytes, d_read_lpns;
     uint64_t d_read_wall_ns, d_read_model_lat_ns, d_read_meta_lat_ns;
     uint64_t d_read_nand_lat_ns, d_read_unmapped_lpns;
     uint64_t d_write_calls, d_write_bytes, d_write_lpns;
     uint64_t d_write_wall_ns, d_write_model_lat_ns, d_write_meta_lat_ns;
     uint64_t d_write_nand_lat_ns, d_write_gc_loops;
+    uint64_t d_ftl_dequeue_ns, d_ftl_enqueue_ns, d_ftl_dispatch_ns;
+    uint64_t d_ftl_prepare_ns;
+    uint64_t d_read_lookup_cpu_ns, d_read_status_cpu_ns;
+    uint64_t d_write_gc_cpu_ns, d_write_trim_cpu_ns;
+    uint64_t d_write_lookup_cpu_ns, d_write_old_map_cpu_ns;
+    uint64_t d_write_map_cpu_ns, d_write_commit_cpu_ns;
+    uint64_t d_write_status_cpu_ns, d_write_copy_cpu_ns;
+    uint64_t d_write_copy_calls;
 
     if (!femu_wb_off_l2p_perf_enabled(ssd)) {
         return;
@@ -61,6 +70,7 @@ static void femu_wb_off_l2p_perf_log_if_due(struct ssd *ssd)
         ssd->wb_off_perf_last_write_meta_lat_ns = ssd->wb_off_perf_write_meta_lat_ns;
         ssd->wb_off_perf_last_write_nand_lat_ns = ssd->wb_off_perf_write_nand_lat_ns;
         ssd->wb_off_perf_last_write_gc_loops = ssd->wb_off_perf_write_gc_loops;
+        ssd->wb_off_perf_sub_last = ssd->wb_off_perf_sub;
         return;
     }
 
@@ -85,6 +95,22 @@ static void femu_wb_off_l2p_perf_log_if_due(struct ssd *ssd)
     d_write_meta_lat_ns = ssd->wb_off_perf_write_meta_lat_ns - ssd->wb_off_perf_last_write_meta_lat_ns;
     d_write_nand_lat_ns = ssd->wb_off_perf_write_nand_lat_ns - ssd->wb_off_perf_last_write_nand_lat_ns;
     d_write_gc_loops = ssd->wb_off_perf_write_gc_loops - ssd->wb_off_perf_last_write_gc_loops;
+    d_ftl_dequeue_ns = ssd->wb_off_perf_sub.ftl_dequeue_ns - ssd->wb_off_perf_sub_last.ftl_dequeue_ns;
+    d_ftl_enqueue_ns = ssd->wb_off_perf_sub.ftl_enqueue_ns - ssd->wb_off_perf_sub_last.ftl_enqueue_ns;
+    d_ftl_dispatch_ns = ssd->wb_off_perf_sub.ftl_dispatch_ns - ssd->wb_off_perf_sub_last.ftl_dispatch_ns;
+    d_ftl_prepare_ns = ssd->wb_off_perf_sub.ftl_prepare_ns - ssd->wb_off_perf_sub_last.ftl_prepare_ns;
+    d_read_lookup_cpu_ns = ssd->wb_off_perf_sub.read_lookup_cpu_ns - ssd->wb_off_perf_sub_last.read_lookup_cpu_ns;
+    d_read_status_cpu_ns = ssd->wb_off_perf_sub.read_status_cpu_ns - ssd->wb_off_perf_sub_last.read_status_cpu_ns;
+    d_write_gc_cpu_ns = ssd->wb_off_perf_sub.write_gc_cpu_ns - ssd->wb_off_perf_sub_last.write_gc_cpu_ns;
+    d_write_trim_cpu_ns = ssd->wb_off_perf_sub.write_trim_cpu_ns - ssd->wb_off_perf_sub_last.write_trim_cpu_ns;
+    d_write_lookup_cpu_ns = ssd->wb_off_perf_sub.write_lookup_cpu_ns - ssd->wb_off_perf_sub_last.write_lookup_cpu_ns;
+    d_write_old_map_cpu_ns = ssd->wb_off_perf_sub.write_old_map_cpu_ns - ssd->wb_off_perf_sub_last.write_old_map_cpu_ns;
+    d_write_map_cpu_ns = ssd->wb_off_perf_sub.write_map_cpu_ns - ssd->wb_off_perf_sub_last.write_map_cpu_ns;
+    d_write_commit_cpu_ns = ssd->wb_off_perf_sub.write_commit_cpu_ns - ssd->wb_off_perf_sub_last.write_commit_cpu_ns;
+    d_write_status_cpu_ns = ssd->wb_off_perf_sub.write_status_cpu_ns - ssd->wb_off_perf_sub_last.write_status_cpu_ns;
+    d_write_copy_cpu_ns = ssd->wb_off_perf_sub.write_copy_cpu_ns - ssd->wb_off_perf_sub_last.write_copy_cpu_ns;
+    d_write_copy_calls = ssd->wb_off_perf_sub.write_copy_calls - ssd->wb_off_perf_sub_last.write_copy_calls;
+    total_calls = d_read_calls + d_write_calls;
 
     if (d_read_calls || d_write_calls) {
         femu_log("WB-off multilevel perf(1s) READ: calls=%" PRIu64
@@ -110,6 +136,31 @@ static void femu_wb_off_l2p_perf_log_if_due(struct ssd *ssd)
                  d_write_calls ? (double)d_write_meta_lat_ns / (double)d_write_calls / 1000.0 : 0.0,
                  d_write_calls ? (double)d_write_nand_lat_ns / (double)d_write_calls / 1000.0 : 0.0,
                  d_write_gc_loops);
+
+            femu_log("WB-off multilevel cpu(1s) FTL: avg_dequeue=%.2fus"
+                 " avg_prepare=%.2fus avg_dispatch=%.2fus avg_enqueue=%.2fus\n",
+                 total_calls ? (double)d_ftl_dequeue_ns / (double)total_calls / 1000.0 : 0.0,
+                 total_calls ? (double)d_ftl_prepare_ns / (double)total_calls / 1000.0 : 0.0,
+                 total_calls ? (double)d_ftl_dispatch_ns / (double)total_calls / 1000.0 : 0.0,
+                 total_calls ? (double)d_ftl_enqueue_ns / (double)total_calls / 1000.0 : 0.0);
+
+            femu_log("WB-off multilevel cpu(1s) READ_SUB: lookup=%.2fus status=%.2fus\n",
+                 d_read_calls ? (double)d_read_lookup_cpu_ns / (double)d_read_calls / 1000.0 : 0.0,
+                 d_read_calls ? (double)d_read_status_cpu_ns / (double)d_read_calls / 1000.0 : 0.0);
+
+            femu_log("WB-off multilevel cpu(1s) WRITE_SUB: gc=%.2fus trim=%.2fus"
+                 " lookup=%.2fus old_map=%.2fus map=%.2fus"
+                 " commit=%.2fus status=%.2fus copy=%.2fus"
+                 " copy_calls=%" PRIu64 "\n",
+                 d_write_calls ? (double)d_write_gc_cpu_ns / (double)d_write_calls / 1000.0 : 0.0,
+                 d_write_calls ? (double)d_write_trim_cpu_ns / (double)d_write_calls / 1000.0 : 0.0,
+                 d_write_calls ? (double)d_write_lookup_cpu_ns / (double)d_write_calls / 1000.0 : 0.0,
+                 d_write_calls ? (double)d_write_old_map_cpu_ns / (double)d_write_calls / 1000.0 : 0.0,
+                 d_write_calls ? (double)d_write_map_cpu_ns / (double)d_write_calls / 1000.0 : 0.0,
+                 d_write_calls ? (double)d_write_commit_cpu_ns / (double)d_write_calls / 1000.0 : 0.0,
+                 d_write_calls ? (double)d_write_status_cpu_ns / (double)d_write_calls / 1000.0 : 0.0,
+                 d_write_copy_calls ? (double)d_write_copy_cpu_ns / (double)d_write_copy_calls / 1000.0 : 0.0,
+                 d_write_copy_calls);
     }
 
     ssd->wb_off_perf_last_log_ns = now;
@@ -129,6 +180,7 @@ static void femu_wb_off_l2p_perf_log_if_due(struct ssd *ssd)
     ssd->wb_off_perf_last_write_meta_lat_ns = ssd->wb_off_perf_write_meta_lat_ns;
     ssd->wb_off_perf_last_write_nand_lat_ns = ssd->wb_off_perf_write_nand_lat_ns;
     ssd->wb_off_perf_last_write_gc_loops = ssd->wb_off_perf_write_gc_loops;
+    ssd->wb_off_perf_sub_last = ssd->wb_off_perf_sub;
 }
 
 static inline bool should_gc(struct ssd *ssd)
@@ -172,9 +224,15 @@ static uint64_t wb_direct_fallback_write(struct ssd *ssd, NvmeRequest *req)
     const uint8_t lba_index = NVME_ID_NS_FLBAS_INDEX(ns->id_ns.flbas);
     const uint8_t data_shift = ns->id_ns.lbaf[lba_index].lbads;
     uint64_t data_offset = req->slba << data_shift;
+    bool wb_off_perf = femu_wb_off_l2p_perf_enabled(ssd);
+    uint64_t t_copy = wb_off_perf ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
     int ret;
 
     ret = backend_rw(ssd->n->mbe, &req->qsg, &data_offset, true);
+    if (wb_off_perf) {
+        ssd->wb_off_perf_sub.write_copy_cpu_ns += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_copy;
+        ssd->wb_off_perf_sub.write_copy_calls++;
+    }
     if (ret) {
         req->status = NVME_DNR;
         return 0;
@@ -1103,7 +1161,14 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
 
     /* normal IO read path */
     for (lpn = start_lpn; lpn <= end_lpn; lpn++) {
+        uint64_t t_lookup;
+
+        t_lookup = wb_off_perf ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
         ppa = get_maptbl_ent_with_lat(ssd, lpn, &meta_lat_sum);
+        if (wb_off_perf) {
+            ssd->wb_off_perf_sub.read_lookup_cpu_ns +=
+                qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_lookup;
+        }
         if (!mapped_ppa(&ppa) || !valid_ppa(ssd, &ppa)) {
             //printf("%s,lpn(%" PRId64 ") not mapped to valid ppa\n", ssd->ssdname, lpn);
             //printf("Invalid ppa,ch:%d,lun:%d,blk:%d,pl:%d,pg:%d,sec:%d\n",
@@ -1113,10 +1178,17 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
         }
 
         struct nand_cmd srd;
+        uint64_t t_status;
+
         srd.type = USER_IO;
         srd.cmd = NAND_READ;
         srd.stime = req->stime;
+        t_status = wb_off_perf ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
         sublat = ssd_advance_status(ssd, &ppa, &srd);
+        if (wb_off_perf) {
+            ssd->wb_off_perf_sub.read_status_cpu_ns +=
+                qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_status;
+        }
         maxlat = (sublat > maxlat) ? sublat : maxlat;
     }
 
@@ -1159,43 +1231,91 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
         ftl_err("start_lpn=%"PRIu64",tt_pgs=%d\n", start_lpn, ssd->sp.tt_pgs);
     }
 
-    while (should_gc_high(ssd)) {
-        /* perform GC here until !should_gc(ssd) */
-        gc_loops++;
-        r = do_gc(ssd, true);
-        if (r == -1)
-            break;
+    if (wb_off_perf) {
+        uint64_t t_gc = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+
+        while (should_gc_high(ssd)) {
+            gc_loops++;
+            r = do_gc(ssd, true);
+            if (r == -1) {
+                break;
+            }
+        }
+
+        ssd->wb_off_perf_sub.write_gc_cpu_ns +=
+            qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_gc;
+    } else {
+        while (should_gc_high(ssd)) {
+            gc_loops++;
+            r = do_gc(ssd, true);
+            if (r == -1)
+                break;
+        }
     }
 
     for (lpn = start_lpn; lpn <= end_lpn; lpn++) {
-        femu_wb_trim_on_lpn_write(ssd, lpn);
+        uint64_t t_part;
 
+        t_part = wb_off_perf ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
+        femu_wb_trim_on_lpn_write(ssd, lpn);
+        if (wb_off_perf) {
+            ssd->wb_off_perf_sub.write_trim_cpu_ns +=
+                qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_part;
+        }
+
+        t_part = wb_off_perf ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
         ppa = get_maptbl_ent_with_lat(ssd, lpn, &meta_lat_sum);
+        if (wb_off_perf) {
+            ssd->wb_off_perf_sub.write_lookup_cpu_ns +=
+                qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_part;
+        }
         if (mapped_ppa(&ppa)) {
+            t_part = wb_off_perf ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
             /* update old page information first */
             mark_page_invalid(ssd, &ppa);
             set_rmap_ent(ssd, INVALID_LPN, &ppa);
+            if (wb_off_perf) {
+                ssd->wb_off_perf_sub.write_old_map_cpu_ns +=
+                    qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_part;
+            }
         }
 
         /* new write */
         ppa = get_new_page(ssd);
         /* update maptbl */
+        t_part = wb_off_perf ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
         meta_wlat = set_maptbl_ent_with_lat(ssd, lpn, &ppa);
+        if (wb_off_perf) {
+            ssd->wb_off_perf_sub.write_map_cpu_ns +=
+                qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_part;
+        }
         meta_lat_sum += meta_wlat;
         /* update rmap */
+        t_part = wb_off_perf ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
         set_rmap_ent(ssd, lpn, &ppa);
 
         mark_page_valid(ssd, &ppa);
 
         /* need to advance the write pointer here */
         ssd_advance_write_pointer(ssd);
+        if (wb_off_perf) {
+            ssd->wb_off_perf_sub.write_commit_cpu_ns +=
+                qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_part;
+        }
 
         struct nand_cmd swr;
+        uint64_t t_status;
+
         swr.type = USER_IO;
         swr.cmd = NAND_WRITE;
         swr.stime = req->stime;
         /* get latency statistics */
+        t_status = wb_off_perf ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
         curlat = ssd_advance_status(ssd, &ppa, &swr);
+        if (wb_off_perf) {
+            ssd->wb_off_perf_sub.write_status_cpu_ns +=
+                qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_status;
+        }
         maxlat = (curlat > maxlat) ? curlat : maxlat;
     }
 
@@ -1335,12 +1455,25 @@ static void *ftl_thread(void *arg)
         }
 
         for (i = 1; i <= n->nr_pollers; i++) {
+            uint64_t t_deq;
+            uint64_t t_dispatch;
+            uint64_t t_prepare;
+            uint64_t t_enq;
+            bool wb_off_perf;
+
             if (!ssd->to_ftl[i] || !femu_ring_count(ssd->to_ftl[i]))
                 continue;
 
+            t_deq = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
             rc = femu_ring_dequeue(ssd->to_ftl[i], (void *)&req, 1);
             if (rc != 1) {
                 printf("FEMU: FTL to_ftl dequeue failed\n");
+            }
+
+            wb_off_perf = femu_wb_off_l2p_perf_enabled(ssd);
+            if (wb_off_perf) {
+                ssd->wb_off_perf_sub.ftl_dequeue_ns +=
+                    qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_deq;
             }
 
             ftl_assert(req);
@@ -1348,11 +1481,21 @@ static void *ftl_thread(void *arg)
                 femu_wb_note_queue_activity(n, req->sq->sqid);
             }
             lat = 0;
+            t_dispatch = wb_off_perf ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
             switch (req->cmd.opcode) {
             case NVME_CMD_WRITE:
+                t_prepare = wb_off_perf ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
                 if (!femu_l2p_prepare(ssd)) {
+                    if (wb_off_perf) {
+                        ssd->wb_off_perf_sub.ftl_prepare_ns +=
+                            qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_prepare;
+                    }
                     req->status = NVME_INVALID_FIELD | NVME_DNR;
                     break;
+                }
+                if (wb_off_perf) {
+                    ssd->wb_off_perf_sub.ftl_prepare_ns +=
+                        qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_prepare;
                 }
                 if (req->wb_candidate && req->sq && req->ns &&
                     femu_wb_should_candidate_write(n)) {
@@ -1377,9 +1520,18 @@ static void *ftl_thread(void *arg)
                 }
                 break;
             case NVME_CMD_READ:
+                t_prepare = wb_off_perf ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
                 if (!femu_l2p_prepare(ssd)) {
+                    if (wb_off_perf) {
+                        ssd->wb_off_perf_sub.ftl_prepare_ns +=
+                            qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_prepare;
+                    }
                     req->status = NVME_INVALID_FIELD | NVME_DNR;
                     break;
+                }
+                if (wb_off_perf) {
+                    ssd->wb_off_perf_sub.ftl_prepare_ns +=
+                        qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_prepare;
                 }
                 if (req->sq && req->ns && n->wb.wb_enabled) {
                     uint64_t start_lpn = req->slba / ssd->sp.secs_per_pg;
@@ -1392,9 +1544,18 @@ static void *ftl_thread(void *arg)
                 break;
             case NVME_CMD_DSM:
                 if (req->dsm_ranges && req->dsm_nr_ranges > 0) {
+                    t_prepare = wb_off_perf ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
                     if (!femu_l2p_prepare(ssd)) {
+                        if (wb_off_perf) {
+                            ssd->wb_off_perf_sub.ftl_prepare_ns +=
+                                qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_prepare;
+                        }
                         req->status = NVME_INVALID_FIELD | NVME_DNR;
                         break;
+                    }
+                    if (wb_off_perf) {
+                        ssd->wb_off_perf_sub.ftl_prepare_ns +=
+                            qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_prepare;
                     }
                     lat = ssd_trim(ssd, req);
                 }
@@ -1404,12 +1565,22 @@ static void *ftl_thread(void *arg)
                 ;
             }
 
+            if (wb_off_perf) {
+                ssd->wb_off_perf_sub.ftl_dispatch_ns +=
+                    qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_dispatch;
+            }
+
             req->reqlat = lat;
             req->expire_time += lat;
 
+            t_enq = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
             rc = femu_ring_enqueue(ssd->to_poller[i], (void *)&req, 1);
             if (rc != 1) {
                 ftl_err("FTL to_poller enqueue failed\n");
+            }
+            if (wb_off_perf) {
+                ssd->wb_off_perf_sub.ftl_enqueue_ns +=
+                    qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_enq;
             }
 
             /* clean one line if needed (in the background) */
