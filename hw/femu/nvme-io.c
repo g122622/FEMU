@@ -58,6 +58,8 @@ static void nvme_process_sq_io(void *opaque, int index_poller)
 
     nvme_update_sq_tail(sq);
     while (!(nvme_sq_empty(sq))) {
+        uint32_t head = sq->head;
+
         if (sq->phys_contig) {
             addr = sq->dma_addr + sq->head * n->sqe_size;
             nvme_copy_cmd(&cmd, (void *)&(((NvmeCmd *)sq->dma_addr_hva)[sq->head]));
@@ -76,6 +78,20 @@ static void nvme_process_sq_io(void *opaque, int index_poller)
         req->dsm_attributes = 0;
         /* Coperd: record req->stime at earliest convenience */
         req->expire_time = req->stime = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+        if (femu_wb_off_multilevel_perf_enabled(n) && sq->entry_visible_ns) {
+            uint64_t visible_ns = sq->entry_visible_ns[head];
+
+            if (visible_ns > 0 && req->stime > visible_ns) {
+                if (cmd.opcode == NVME_CMD_WRITE) {
+                    n->ssd->wb_off_perf_sub.write_sq_wait_ns +=
+                        req->stime - visible_ns;
+                } else {
+                    n->ssd->wb_off_perf_sub.read_sq_wait_ns +=
+                        req->stime - visible_ns;
+                }
+            }
+            sq->entry_visible_ns[head] = 0;
+        }
         req->cqe.cid = cmd.cid;
         req->cmd_opcode = cmd.opcode;
         memcpy(&req->cmd, &cmd, sizeof(NvmeCmd));

@@ -43,6 +43,7 @@ static void femu_wb_off_l2p_perf_log_if_due(struct ssd *ssd)
     uint64_t d_ftl_prepare_ns;
     uint64_t d_read_submit_cpu_ns, d_write_submit_cpu_ns;
     uint64_t d_read_backend_cpu_ns, d_write_backend_cpu_ns;
+    uint64_t d_read_sq_wait_ns, d_write_sq_wait_ns;
     uint64_t d_read_to_ftl_wait_ns, d_write_to_ftl_wait_ns;
     uint64_t d_read_to_poller_wait_ns, d_write_to_poller_wait_ns;
     uint64_t d_read_cqe_late_ns, d_write_cqe_late_ns;
@@ -145,6 +146,10 @@ static void femu_wb_off_l2p_perf_log_if_due(struct ssd *ssd)
                             ssd->wb_off_perf_sub_last.read_backend_cpu_ns;
     d_write_backend_cpu_ns = ssd->wb_off_perf_sub.write_backend_cpu_ns -
                              ssd->wb_off_perf_sub_last.write_backend_cpu_ns;
+    d_read_sq_wait_ns = ssd->wb_off_perf_sub.read_sq_wait_ns -
+                        ssd->wb_off_perf_sub_last.read_sq_wait_ns;
+    d_write_sq_wait_ns = ssd->wb_off_perf_sub.write_sq_wait_ns -
+                         ssd->wb_off_perf_sub_last.write_sq_wait_ns;
     d_read_to_ftl_wait_ns = ssd->wb_off_perf_sub.read_to_ftl_wait_ns -
                             ssd->wb_off_perf_sub_last.read_to_ftl_wait_ns;
     d_write_to_ftl_wait_ns = ssd->wb_off_perf_sub.write_to_ftl_wait_ns -
@@ -250,9 +255,10 @@ static void femu_wb_off_l2p_perf_log_if_due(struct ssd *ssd)
                  total_calls ? (double)d_ftl_dispatch_ns / (double)total_calls / 1000.0 : 0.0,
                  total_calls ? (double)d_ftl_enqueue_ns / (double)total_calls / 1000.0 : 0.0);
 
-        femu_log("WB-off multilevel host(1s) READ: submit=%.2fus backend=%.2fus"
+        femu_log("WB-off multilevel host(1s) READ: sq_wait=%.2fus submit=%.2fus backend=%.2fus"
                  " to_ftl=%.2fus to_poller=%.2fus cqe_late=%.2fus"
                  " late_ios=%" PRIu64 " e2e=%.2fus extra_vs_model=%.2fus\n",
+             d_read_calls ? (double)d_read_sq_wait_ns / (double)d_read_calls / 1000.0 : 0.0,
                  d_read_calls ? (double)d_read_submit_cpu_ns / (double)d_read_calls / 1000.0 : 0.0,
                  d_read_calls ? (double)d_read_backend_cpu_ns / (double)d_read_calls / 1000.0 : 0.0,
                  d_read_calls ? (double)d_read_to_ftl_wait_ns / (double)d_read_calls / 1000.0 : 0.0,
@@ -264,9 +270,10 @@ static void femu_wb_off_l2p_perf_log_if_due(struct ssd *ssd)
                                  (double)d_read_model_lat_ns) /
                                     (double)d_read_calls / 1000.0 : 0.0);
 
-        femu_log("WB-off multilevel host(1s) WRITE: submit=%.2fus backend=%.2fus"
+        femu_log("WB-off multilevel host(1s) WRITE: sq_wait=%.2fus submit=%.2fus backend=%.2fus"
                  " to_ftl=%.2fus to_poller=%.2fus cqe_late=%.2fus"
                  " late_ios=%" PRIu64 " e2e=%.2fus extra_vs_model=%.2fus\n",
+             d_write_calls ? (double)d_write_sq_wait_ns / (double)d_write_calls / 1000.0 : 0.0,
                  d_write_calls ? (double)d_write_submit_cpu_ns / (double)d_write_calls / 1000.0 : 0.0,
                  d_write_calls ? (double)d_write_backend_cpu_ns / (double)d_write_calls / 1000.0 : 0.0,
                  d_write_calls ? (double)d_write_to_ftl_wait_ns / (double)d_write_calls / 1000.0 : 0.0,

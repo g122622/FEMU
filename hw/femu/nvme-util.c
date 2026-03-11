@@ -26,13 +26,24 @@ void nvme_inc_sq_head(NvmeSQueue *sq)
 
 void nvme_update_sq_tail(NvmeSQueue *sq)
 {
+    uint32_t old_tail = sq->tail;
+    uint32_t new_tail = old_tail;
+
     if (sq->db_addr_hva) {
-        sq->tail = *((uint32_t *)sq->db_addr_hva);
-        return;
+        new_tail = *((uint32_t *)sq->db_addr_hva);
+    } else if (sq->db_addr) {
+        nvme_addr_read(sq->ctrl, sq->db_addr, &new_tail, sizeof(new_tail));
     }
 
-    if (sq->db_addr) {
-        nvme_addr_read(sq->ctrl, sq->db_addr, &sq->tail, sizeof(sq->tail));
+    sq->tail = new_tail;
+
+    if (sq->entry_visible_ns && old_tail != new_tail) {
+        uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+
+        while (old_tail != new_tail) {
+            sq->entry_visible_ns[old_tail] = now;
+            old_tail = (old_tail + 1) % sq->size;
+        }
     }
 }
 
@@ -151,6 +162,7 @@ void nvme_free_sq(NvmeSQueue *sq, FemuCtrl *n)
 {
     n->sq[sq->sqid] = NULL;
     g_free(sq->io_req);
+    g_free(sq->entry_visible_ns);
     if (sq->prp_list) {
         g_free(sq->prp_list);
     }
@@ -186,6 +198,7 @@ uint16_t nvme_init_sq(NvmeSQueue *sq, FemuCtrl *n, uint64_t dma_addr, uint16_t
     }
 
     sq->io_req = g_malloc0(sq->size * sizeof(*sq->io_req));
+    sq->entry_visible_ns = g_malloc0(sizeof(*sq->entry_visible_ns) * sq->size);
     QTAILQ_INIT(&sq->req_list);
     QTAILQ_INIT(&sq->out_req_list);
     for (int i = 0; i < sq->size; i++) {

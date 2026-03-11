@@ -1048,6 +1048,7 @@ typedef struct NvmeSQueue {
     uint32_t    size;
     uint64_t    dma_addr;
     uint64_t    dma_addr_hva;
+    uint64_t    *entry_visible_ns;
     uint64_t    completed;
     uint64_t    *prp_list;
     NvmeRequest *io_req;

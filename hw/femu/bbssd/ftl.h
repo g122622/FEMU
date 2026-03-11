@@ -204,6 +204,8 @@ typedef struct FemuWbOffPerfSubStat {
     uint64_t write_submit_cpu_ns;
     uint64_t read_backend_cpu_ns;
     uint64_t write_backend_cpu_ns;
+    uint64_t read_sq_wait_ns;
+    uint64_t write_sq_wait_ns;
     uint64_t read_to_ftl_wait_ns;
     uint64_t write_to_ftl_wait_ns;
     uint64_t read_to_poller_wait_ns;
