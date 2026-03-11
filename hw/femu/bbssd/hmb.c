@@ -1,7 +1,15 @@
 #include "hmb.h"
+#include "ftl.h"
 #include "write_buffer.h"
 #include "../common/hmb-config.h"
 #include "../common/hmb-types.h"
+
+static inline bool femu_hmb_perf_enabled(FemuCtrl *n)
+{
+    return n && n->ssd && n->exp_enable_l2p_multilevel &&
+           (!n->exp_enable_wb || !n->wb.wb_enabled ||
+            n->wb.gate_waiting_kva_push);
+}
 
 uint64_t femu_hmb_total_bytes(FemuCtrl *n)
 {
@@ -69,6 +77,8 @@ bool femu_hmb_rw(FemuCtrl *n, uint64_t off, void *buf, uint32_t len,
 {
     uint8_t *p = buf;
     uint32_t left = len;
+    bool wb_off_perf = femu_hmb_perf_enabled(n);
+    uint64_t t0 = wb_off_perf ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
 
     if (!n->hmb_enabled || !n->hmb_descs || !n->hmb_desc_count) {
         return false;
@@ -106,6 +116,20 @@ bool femu_hmb_rw(FemuCtrl *n, uint64_t off, void *buf, uint32_t len,
         p += xfer;
         off += xfer;
         left -= xfer;
+    }
+
+    if (wb_off_perf) {
+        uint64_t delta = qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t0;
+
+        if (is_write) {
+            n->ssd->wb_off_perf_sub.hmb_write_cpu_ns += delta;
+            n->ssd->wb_off_perf_sub.hmb_write_calls++;
+            n->ssd->wb_off_perf_sub.hmb_write_bytes += len;
+        } else {
+            n->ssd->wb_off_perf_sub.hmb_read_cpu_ns += delta;
+            n->ssd->wb_off_perf_sub.hmb_read_calls++;
+            n->ssd->wb_off_perf_sub.hmb_read_bytes += len;
+        }
     }
 
     return left == 0;

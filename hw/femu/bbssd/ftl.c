@@ -41,12 +41,24 @@ static void femu_wb_off_l2p_perf_log_if_due(struct ssd *ssd)
     uint64_t d_write_nand_lat_ns, d_write_gc_loops;
     uint64_t d_ftl_dequeue_ns, d_ftl_enqueue_ns, d_ftl_dispatch_ns;
     uint64_t d_ftl_prepare_ns;
+    uint64_t d_read_submit_cpu_ns, d_write_submit_cpu_ns;
+    uint64_t d_read_backend_cpu_ns, d_write_backend_cpu_ns;
+    uint64_t d_read_to_ftl_wait_ns, d_write_to_ftl_wait_ns;
+    uint64_t d_read_to_poller_wait_ns, d_write_to_poller_wait_ns;
+    uint64_t d_read_cqe_late_ns, d_write_cqe_late_ns;
+    uint64_t d_read_cqe_late_ios, d_write_cqe_late_ios;
+    uint64_t d_read_end_to_end_ns, d_write_end_to_end_ns;
+    uint64_t d_hmb_read_cpu_ns, d_hmb_write_cpu_ns;
+    uint64_t d_hmb_read_calls, d_hmb_write_calls;
+    uint64_t d_hmb_read_bytes, d_hmb_write_bytes;
     uint64_t d_read_lookup_cpu_ns, d_read_status_cpu_ns;
     uint64_t d_write_gc_cpu_ns, d_write_trim_cpu_ns;
     uint64_t d_write_lookup_cpu_ns, d_write_old_map_cpu_ns;
     uint64_t d_write_map_cpu_ns, d_write_commit_cpu_ns;
     uint64_t d_write_status_cpu_ns, d_write_copy_cpu_ns;
     uint64_t d_write_copy_calls;
+    uint64_t d_l1_hits, d_l1_misses, d_l2_hits, d_l2_misses;
+    uint64_t l1_refs, l2_refs;
 
     if (!femu_wb_off_l2p_perf_enabled(ssd)) {
         return;
@@ -58,18 +70,30 @@ static void femu_wb_off_l2p_perf_log_if_due(struct ssd *ssd)
         ssd->wb_off_perf_last_read_bytes = ssd->wb_off_perf_read_bytes;
         ssd->wb_off_perf_last_read_lpns = ssd->wb_off_perf_read_lpns;
         ssd->wb_off_perf_last_read_wall_ns = ssd->wb_off_perf_read_wall_ns;
-        ssd->wb_off_perf_last_read_model_lat_ns = ssd->wb_off_perf_read_model_lat_ns;
-        ssd->wb_off_perf_last_read_meta_lat_ns = ssd->wb_off_perf_read_meta_lat_ns;
-        ssd->wb_off_perf_last_read_nand_lat_ns = ssd->wb_off_perf_read_nand_lat_ns;
-        ssd->wb_off_perf_last_read_unmapped_lpns = ssd->wb_off_perf_read_unmapped_lpns;
+        ssd->wb_off_perf_last_read_model_lat_ns =
+            ssd->wb_off_perf_read_model_lat_ns;
+        ssd->wb_off_perf_last_read_meta_lat_ns =
+            ssd->wb_off_perf_read_meta_lat_ns;
+        ssd->wb_off_perf_last_read_nand_lat_ns =
+            ssd->wb_off_perf_read_nand_lat_ns;
+        ssd->wb_off_perf_last_read_unmapped_lpns =
+            ssd->wb_off_perf_read_unmapped_lpns;
         ssd->wb_off_perf_last_write_calls = ssd->wb_off_perf_write_calls;
         ssd->wb_off_perf_last_write_bytes = ssd->wb_off_perf_write_bytes;
         ssd->wb_off_perf_last_write_lpns = ssd->wb_off_perf_write_lpns;
         ssd->wb_off_perf_last_write_wall_ns = ssd->wb_off_perf_write_wall_ns;
-        ssd->wb_off_perf_last_write_model_lat_ns = ssd->wb_off_perf_write_model_lat_ns;
-        ssd->wb_off_perf_last_write_meta_lat_ns = ssd->wb_off_perf_write_meta_lat_ns;
-        ssd->wb_off_perf_last_write_nand_lat_ns = ssd->wb_off_perf_write_nand_lat_ns;
-        ssd->wb_off_perf_last_write_gc_loops = ssd->wb_off_perf_write_gc_loops;
+        ssd->wb_off_perf_last_write_model_lat_ns =
+            ssd->wb_off_perf_write_model_lat_ns;
+        ssd->wb_off_perf_last_write_meta_lat_ns =
+            ssd->wb_off_perf_write_meta_lat_ns;
+        ssd->wb_off_perf_last_write_nand_lat_ns =
+            ssd->wb_off_perf_write_nand_lat_ns;
+        ssd->wb_off_perf_last_write_gc_loops =
+            ssd->wb_off_perf_write_gc_loops;
+        ssd->wb_off_perf_last_l1_hits = ssd->l2p_l1.hits;
+        ssd->wb_off_perf_last_l1_misses = ssd->l2p_l1.misses;
+        ssd->wb_off_perf_last_l2_hits = ssd->n->l2p_l2.hits;
+        ssd->wb_off_perf_last_l2_misses = ssd->n->l2p_l2.misses;
         ssd->wb_off_perf_sub_last = ssd->wb_off_perf_sub;
         return;
     }
@@ -82,34 +106,107 @@ static void femu_wb_off_l2p_perf_log_if_due(struct ssd *ssd)
     d_read_bytes = ssd->wb_off_perf_read_bytes - ssd->wb_off_perf_last_read_bytes;
     d_read_lpns = ssd->wb_off_perf_read_lpns - ssd->wb_off_perf_last_read_lpns;
     d_read_wall_ns = ssd->wb_off_perf_read_wall_ns - ssd->wb_off_perf_last_read_wall_ns;
-    d_read_model_lat_ns = ssd->wb_off_perf_read_model_lat_ns - ssd->wb_off_perf_last_read_model_lat_ns;
-    d_read_meta_lat_ns = ssd->wb_off_perf_read_meta_lat_ns - ssd->wb_off_perf_last_read_meta_lat_ns;
-    d_read_nand_lat_ns = ssd->wb_off_perf_read_nand_lat_ns - ssd->wb_off_perf_last_read_nand_lat_ns;
-    d_read_unmapped_lpns = ssd->wb_off_perf_read_unmapped_lpns - ssd->wb_off_perf_last_read_unmapped_lpns;
+    d_read_model_lat_ns = ssd->wb_off_perf_read_model_lat_ns -
+                          ssd->wb_off_perf_last_read_model_lat_ns;
+    d_read_meta_lat_ns = ssd->wb_off_perf_read_meta_lat_ns -
+                         ssd->wb_off_perf_last_read_meta_lat_ns;
+    d_read_nand_lat_ns = ssd->wb_off_perf_read_nand_lat_ns -
+                         ssd->wb_off_perf_last_read_nand_lat_ns;
+    d_read_unmapped_lpns = ssd->wb_off_perf_read_unmapped_lpns -
+                           ssd->wb_off_perf_last_read_unmapped_lpns;
 
     d_write_calls = ssd->wb_off_perf_write_calls - ssd->wb_off_perf_last_write_calls;
     d_write_bytes = ssd->wb_off_perf_write_bytes - ssd->wb_off_perf_last_write_bytes;
     d_write_lpns = ssd->wb_off_perf_write_lpns - ssd->wb_off_perf_last_write_lpns;
     d_write_wall_ns = ssd->wb_off_perf_write_wall_ns - ssd->wb_off_perf_last_write_wall_ns;
-    d_write_model_lat_ns = ssd->wb_off_perf_write_model_lat_ns - ssd->wb_off_perf_last_write_model_lat_ns;
-    d_write_meta_lat_ns = ssd->wb_off_perf_write_meta_lat_ns - ssd->wb_off_perf_last_write_meta_lat_ns;
-    d_write_nand_lat_ns = ssd->wb_off_perf_write_nand_lat_ns - ssd->wb_off_perf_last_write_nand_lat_ns;
-    d_write_gc_loops = ssd->wb_off_perf_write_gc_loops - ssd->wb_off_perf_last_write_gc_loops;
-    d_ftl_dequeue_ns = ssd->wb_off_perf_sub.ftl_dequeue_ns - ssd->wb_off_perf_sub_last.ftl_dequeue_ns;
-    d_ftl_enqueue_ns = ssd->wb_off_perf_sub.ftl_enqueue_ns - ssd->wb_off_perf_sub_last.ftl_enqueue_ns;
-    d_ftl_dispatch_ns = ssd->wb_off_perf_sub.ftl_dispatch_ns - ssd->wb_off_perf_sub_last.ftl_dispatch_ns;
-    d_ftl_prepare_ns = ssd->wb_off_perf_sub.ftl_prepare_ns - ssd->wb_off_perf_sub_last.ftl_prepare_ns;
-    d_read_lookup_cpu_ns = ssd->wb_off_perf_sub.read_lookup_cpu_ns - ssd->wb_off_perf_sub_last.read_lookup_cpu_ns;
-    d_read_status_cpu_ns = ssd->wb_off_perf_sub.read_status_cpu_ns - ssd->wb_off_perf_sub_last.read_status_cpu_ns;
-    d_write_gc_cpu_ns = ssd->wb_off_perf_sub.write_gc_cpu_ns - ssd->wb_off_perf_sub_last.write_gc_cpu_ns;
-    d_write_trim_cpu_ns = ssd->wb_off_perf_sub.write_trim_cpu_ns - ssd->wb_off_perf_sub_last.write_trim_cpu_ns;
-    d_write_lookup_cpu_ns = ssd->wb_off_perf_sub.write_lookup_cpu_ns - ssd->wb_off_perf_sub_last.write_lookup_cpu_ns;
-    d_write_old_map_cpu_ns = ssd->wb_off_perf_sub.write_old_map_cpu_ns - ssd->wb_off_perf_sub_last.write_old_map_cpu_ns;
-    d_write_map_cpu_ns = ssd->wb_off_perf_sub.write_map_cpu_ns - ssd->wb_off_perf_sub_last.write_map_cpu_ns;
-    d_write_commit_cpu_ns = ssd->wb_off_perf_sub.write_commit_cpu_ns - ssd->wb_off_perf_sub_last.write_commit_cpu_ns;
-    d_write_status_cpu_ns = ssd->wb_off_perf_sub.write_status_cpu_ns - ssd->wb_off_perf_sub_last.write_status_cpu_ns;
-    d_write_copy_cpu_ns = ssd->wb_off_perf_sub.write_copy_cpu_ns - ssd->wb_off_perf_sub_last.write_copy_cpu_ns;
-    d_write_copy_calls = ssd->wb_off_perf_sub.write_copy_calls - ssd->wb_off_perf_sub_last.write_copy_calls;
+    d_write_model_lat_ns = ssd->wb_off_perf_write_model_lat_ns -
+                           ssd->wb_off_perf_last_write_model_lat_ns;
+    d_write_meta_lat_ns = ssd->wb_off_perf_write_meta_lat_ns -
+                          ssd->wb_off_perf_last_write_meta_lat_ns;
+    d_write_nand_lat_ns = ssd->wb_off_perf_write_nand_lat_ns -
+                          ssd->wb_off_perf_last_write_nand_lat_ns;
+    d_write_gc_loops = ssd->wb_off_perf_write_gc_loops -
+                       ssd->wb_off_perf_last_write_gc_loops;
+
+    d_ftl_dequeue_ns = ssd->wb_off_perf_sub.ftl_dequeue_ns -
+                       ssd->wb_off_perf_sub_last.ftl_dequeue_ns;
+    d_ftl_enqueue_ns = ssd->wb_off_perf_sub.ftl_enqueue_ns -
+                       ssd->wb_off_perf_sub_last.ftl_enqueue_ns;
+    d_ftl_dispatch_ns = ssd->wb_off_perf_sub.ftl_dispatch_ns -
+                        ssd->wb_off_perf_sub_last.ftl_dispatch_ns;
+    d_ftl_prepare_ns = ssd->wb_off_perf_sub.ftl_prepare_ns -
+                       ssd->wb_off_perf_sub_last.ftl_prepare_ns;
+
+    d_read_submit_cpu_ns = ssd->wb_off_perf_sub.read_submit_cpu_ns -
+                           ssd->wb_off_perf_sub_last.read_submit_cpu_ns;
+    d_write_submit_cpu_ns = ssd->wb_off_perf_sub.write_submit_cpu_ns -
+                            ssd->wb_off_perf_sub_last.write_submit_cpu_ns;
+    d_read_backend_cpu_ns = ssd->wb_off_perf_sub.read_backend_cpu_ns -
+                            ssd->wb_off_perf_sub_last.read_backend_cpu_ns;
+    d_write_backend_cpu_ns = ssd->wb_off_perf_sub.write_backend_cpu_ns -
+                             ssd->wb_off_perf_sub_last.write_backend_cpu_ns;
+    d_read_to_ftl_wait_ns = ssd->wb_off_perf_sub.read_to_ftl_wait_ns -
+                            ssd->wb_off_perf_sub_last.read_to_ftl_wait_ns;
+    d_write_to_ftl_wait_ns = ssd->wb_off_perf_sub.write_to_ftl_wait_ns -
+                             ssd->wb_off_perf_sub_last.write_to_ftl_wait_ns;
+    d_read_to_poller_wait_ns = ssd->wb_off_perf_sub.read_to_poller_wait_ns -
+                               ssd->wb_off_perf_sub_last.read_to_poller_wait_ns;
+    d_write_to_poller_wait_ns = ssd->wb_off_perf_sub.write_to_poller_wait_ns -
+                                ssd->wb_off_perf_sub_last.write_to_poller_wait_ns;
+    d_read_cqe_late_ns = ssd->wb_off_perf_sub.read_cqe_late_ns -
+                         ssd->wb_off_perf_sub_last.read_cqe_late_ns;
+    d_write_cqe_late_ns = ssd->wb_off_perf_sub.write_cqe_late_ns -
+                          ssd->wb_off_perf_sub_last.write_cqe_late_ns;
+    d_read_cqe_late_ios = ssd->wb_off_perf_sub.read_cqe_late_ios -
+                          ssd->wb_off_perf_sub_last.read_cqe_late_ios;
+    d_write_cqe_late_ios = ssd->wb_off_perf_sub.write_cqe_late_ios -
+                           ssd->wb_off_perf_sub_last.write_cqe_late_ios;
+    d_read_end_to_end_ns = ssd->wb_off_perf_sub.read_end_to_end_ns -
+                           ssd->wb_off_perf_sub_last.read_end_to_end_ns;
+    d_write_end_to_end_ns = ssd->wb_off_perf_sub.write_end_to_end_ns -
+                            ssd->wb_off_perf_sub_last.write_end_to_end_ns;
+    d_hmb_read_cpu_ns = ssd->wb_off_perf_sub.hmb_read_cpu_ns -
+                        ssd->wb_off_perf_sub_last.hmb_read_cpu_ns;
+    d_hmb_write_cpu_ns = ssd->wb_off_perf_sub.hmb_write_cpu_ns -
+                         ssd->wb_off_perf_sub_last.hmb_write_cpu_ns;
+    d_hmb_read_calls = ssd->wb_off_perf_sub.hmb_read_calls -
+                       ssd->wb_off_perf_sub_last.hmb_read_calls;
+    d_hmb_write_calls = ssd->wb_off_perf_sub.hmb_write_calls -
+                        ssd->wb_off_perf_sub_last.hmb_write_calls;
+    d_hmb_read_bytes = ssd->wb_off_perf_sub.hmb_read_bytes -
+                       ssd->wb_off_perf_sub_last.hmb_read_bytes;
+    d_hmb_write_bytes = ssd->wb_off_perf_sub.hmb_write_bytes -
+                        ssd->wb_off_perf_sub_last.hmb_write_bytes;
+
+    d_read_lookup_cpu_ns = ssd->wb_off_perf_sub.read_lookup_cpu_ns -
+                           ssd->wb_off_perf_sub_last.read_lookup_cpu_ns;
+    d_read_status_cpu_ns = ssd->wb_off_perf_sub.read_status_cpu_ns -
+                           ssd->wb_off_perf_sub_last.read_status_cpu_ns;
+    d_write_gc_cpu_ns = ssd->wb_off_perf_sub.write_gc_cpu_ns -
+                        ssd->wb_off_perf_sub_last.write_gc_cpu_ns;
+    d_write_trim_cpu_ns = ssd->wb_off_perf_sub.write_trim_cpu_ns -
+                          ssd->wb_off_perf_sub_last.write_trim_cpu_ns;
+    d_write_lookup_cpu_ns = ssd->wb_off_perf_sub.write_lookup_cpu_ns -
+                            ssd->wb_off_perf_sub_last.write_lookup_cpu_ns;
+    d_write_old_map_cpu_ns = ssd->wb_off_perf_sub.write_old_map_cpu_ns -
+                             ssd->wb_off_perf_sub_last.write_old_map_cpu_ns;
+    d_write_map_cpu_ns = ssd->wb_off_perf_sub.write_map_cpu_ns -
+                         ssd->wb_off_perf_sub_last.write_map_cpu_ns;
+    d_write_commit_cpu_ns = ssd->wb_off_perf_sub.write_commit_cpu_ns -
+                            ssd->wb_off_perf_sub_last.write_commit_cpu_ns;
+    d_write_status_cpu_ns = ssd->wb_off_perf_sub.write_status_cpu_ns -
+                            ssd->wb_off_perf_sub_last.write_status_cpu_ns;
+    d_write_copy_cpu_ns = ssd->wb_off_perf_sub.write_copy_cpu_ns -
+                          ssd->wb_off_perf_sub_last.write_copy_cpu_ns;
+    d_write_copy_calls = ssd->wb_off_perf_sub.write_copy_calls -
+                         ssd->wb_off_perf_sub_last.write_copy_calls;
+
+    d_l1_hits = ssd->l2p_l1.hits - ssd->wb_off_perf_last_l1_hits;
+    d_l1_misses = ssd->l2p_l1.misses - ssd->wb_off_perf_last_l1_misses;
+    d_l2_hits = ssd->n->l2p_l2.hits - ssd->wb_off_perf_last_l2_hits;
+    d_l2_misses = ssd->n->l2p_l2.misses - ssd->wb_off_perf_last_l2_misses;
+    l1_refs = d_l1_hits + d_l1_misses;
+    l2_refs = d_l2_hits + d_l2_misses;
     total_calls = d_read_calls + d_write_calls;
 
     if (d_read_calls || d_write_calls) {
@@ -137,18 +234,66 @@ static void femu_wb_off_l2p_perf_log_if_due(struct ssd *ssd)
                  d_write_calls ? (double)d_write_nand_lat_ns / (double)d_write_calls / 1000.0 : 0.0,
                  d_write_gc_loops);
 
-            femu_log("WB-off multilevel cpu(1s) FTL: avg_dequeue=%.2fus"
+        femu_log("WB-off multilevel cache(1s): L1 hit=%" PRIu64 " miss=%" PRIu64
+                 " hit_rate=%.2f%% | L2 hit=%" PRIu64 " miss=%" PRIu64
+                 " hit_rate=%.2f%% | L3_access=%" PRIu64 "\n",
+                 d_l1_hits, d_l1_misses,
+                 l1_refs ? (100.0 * (double)d_l1_hits / (double)l1_refs) : 0.0,
+                 d_l2_hits, d_l2_misses,
+                 l2_refs ? (100.0 * (double)d_l2_hits / (double)l2_refs) : 0.0,
+                 d_l2_misses);
+
+        femu_log("WB-off multilevel cpu(1s) FTL: avg_dequeue=%.2fus"
                  " avg_prepare=%.2fus avg_dispatch=%.2fus avg_enqueue=%.2fus\n",
                  total_calls ? (double)d_ftl_dequeue_ns / (double)total_calls / 1000.0 : 0.0,
                  total_calls ? (double)d_ftl_prepare_ns / (double)total_calls / 1000.0 : 0.0,
                  total_calls ? (double)d_ftl_dispatch_ns / (double)total_calls / 1000.0 : 0.0,
                  total_calls ? (double)d_ftl_enqueue_ns / (double)total_calls / 1000.0 : 0.0);
 
-            femu_log("WB-off multilevel cpu(1s) READ_SUB: lookup=%.2fus status=%.2fus\n",
+        femu_log("WB-off multilevel host(1s) READ: submit=%.2fus backend=%.2fus"
+                 " to_ftl=%.2fus to_poller=%.2fus cqe_late=%.2fus"
+                 " late_ios=%" PRIu64 " e2e=%.2fus extra_vs_model=%.2fus\n",
+                 d_read_calls ? (double)d_read_submit_cpu_ns / (double)d_read_calls / 1000.0 : 0.0,
+                 d_read_calls ? (double)d_read_backend_cpu_ns / (double)d_read_calls / 1000.0 : 0.0,
+                 d_read_calls ? (double)d_read_to_ftl_wait_ns / (double)d_read_calls / 1000.0 : 0.0,
+                 d_read_calls ? (double)d_read_to_poller_wait_ns / (double)d_read_calls / 1000.0 : 0.0,
+                 d_read_calls ? (double)d_read_cqe_late_ns / (double)d_read_calls / 1000.0 : 0.0,
+                 d_read_cqe_late_ios,
+                 d_read_calls ? (double)d_read_end_to_end_ns / (double)d_read_calls / 1000.0 : 0.0,
+                 d_read_calls ? ((double)d_read_end_to_end_ns -
+                                 (double)d_read_model_lat_ns) /
+                                    (double)d_read_calls / 1000.0 : 0.0);
+
+        femu_log("WB-off multilevel host(1s) WRITE: submit=%.2fus backend=%.2fus"
+                 " to_ftl=%.2fus to_poller=%.2fus cqe_late=%.2fus"
+                 " late_ios=%" PRIu64 " e2e=%.2fus extra_vs_model=%.2fus\n",
+                 d_write_calls ? (double)d_write_submit_cpu_ns / (double)d_write_calls / 1000.0 : 0.0,
+                 d_write_calls ? (double)d_write_backend_cpu_ns / (double)d_write_calls / 1000.0 : 0.0,
+                 d_write_calls ? (double)d_write_to_ftl_wait_ns / (double)d_write_calls / 1000.0 : 0.0,
+                 d_write_calls ? (double)d_write_to_poller_wait_ns / (double)d_write_calls / 1000.0 : 0.0,
+                 d_write_calls ? (double)d_write_cqe_late_ns / (double)d_write_calls / 1000.0 : 0.0,
+                 d_write_cqe_late_ios,
+                 d_write_calls ? (double)d_write_end_to_end_ns / (double)d_write_calls / 1000.0 : 0.0,
+                 d_write_calls ? ((double)d_write_end_to_end_ns -
+                                  (double)d_write_model_lat_ns) /
+                                     (double)d_write_calls / 1000.0 : 0.0);
+
+        femu_log("WB-off multilevel hmb(1s): rd_calls=%" PRIu64
+                 " rd_bytes=%" PRIu64 " avg_rd=%.2fus"
+                 " | wr_calls=%" PRIu64 " wr_bytes=%" PRIu64
+                 " avg_wr=%.2fus\n",
+                 d_hmb_read_calls, d_hmb_read_bytes,
+                 d_hmb_read_calls ? (double)d_hmb_read_cpu_ns /
+                                    (double)d_hmb_read_calls / 1000.0 : 0.0,
+                 d_hmb_write_calls, d_hmb_write_bytes,
+                 d_hmb_write_calls ? (double)d_hmb_write_cpu_ns /
+                                     (double)d_hmb_write_calls / 1000.0 : 0.0);
+
+        femu_log("WB-off multilevel cpu(1s) READ_SUB: lookup=%.2fus status=%.2fus\n",
                  d_read_calls ? (double)d_read_lookup_cpu_ns / (double)d_read_calls / 1000.0 : 0.0,
                  d_read_calls ? (double)d_read_status_cpu_ns / (double)d_read_calls / 1000.0 : 0.0);
 
-            femu_log("WB-off multilevel cpu(1s) WRITE_SUB: gc=%.2fus trim=%.2fus"
+        femu_log("WB-off multilevel cpu(1s) WRITE_SUB: gc=%.2fus trim=%.2fus"
                  " lookup=%.2fus old_map=%.2fus map=%.2fus"
                  " commit=%.2fus status=%.2fus copy=%.2fus"
                  " copy_calls=%" PRIu64 "\n",
@@ -180,6 +325,10 @@ static void femu_wb_off_l2p_perf_log_if_due(struct ssd *ssd)
     ssd->wb_off_perf_last_write_meta_lat_ns = ssd->wb_off_perf_write_meta_lat_ns;
     ssd->wb_off_perf_last_write_nand_lat_ns = ssd->wb_off_perf_write_nand_lat_ns;
     ssd->wb_off_perf_last_write_gc_loops = ssd->wb_off_perf_write_gc_loops;
+    ssd->wb_off_perf_last_l1_hits = ssd->l2p_l1.hits;
+    ssd->wb_off_perf_last_l1_misses = ssd->l2p_l1.misses;
+    ssd->wb_off_perf_last_l2_hits = ssd->n->l2p_l2.hits;
+    ssd->wb_off_perf_last_l2_misses = ssd->n->l2p_l2.misses;
     ssd->wb_off_perf_sub_last = ssd->wb_off_perf_sub;
 }
 
@@ -1472,6 +1621,14 @@ static void *ftl_thread(void *arg)
 
             wb_off_perf = femu_wb_off_l2p_perf_enabled(ssd);
             if (wb_off_perf) {
+                if (req->cmd.opcode == NVME_CMD_READ && req->to_ftl_enq_ns > 0) {
+                    ssd->wb_off_perf_sub.read_to_ftl_wait_ns +=
+                        t_deq - req->to_ftl_enq_ns;
+                } else if (req->cmd.opcode == NVME_CMD_WRITE &&
+                           req->to_ftl_enq_ns > 0) {
+                    ssd->wb_off_perf_sub.write_to_ftl_wait_ns +=
+                        t_deq - req->to_ftl_enq_ns;
+                }
                 ssd->wb_off_perf_sub.ftl_dequeue_ns +=
                     qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_deq;
             }
@@ -1572,6 +1729,8 @@ static void *ftl_thread(void *arg)
 
             req->reqlat = lat;
             req->expire_time += lat;
+            req->to_poller_enq_ns = wb_off_perf ?
+                qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
 
             t_enq = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
             rc = femu_ring_enqueue(ssd->to_poller[i], (void *)&req, 1);

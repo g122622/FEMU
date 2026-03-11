@@ -1,5 +1,13 @@
 #include "./nvme.h"
+#include "./bbssd/ftl.h"
 #include "./bbssd/write_buffer.h"
+
+static inline bool femu_wb_off_multilevel_perf_enabled(FemuCtrl *n)
+{
+    return n && n->ssd && n->exp_enable_l2p_multilevel &&
+           (!n->exp_enable_wb || !n->wb.wb_enabled ||
+            n->wb.gate_waiting_kva_push);
+}
 
 static uint16_t nvme_io_cmd(FemuCtrl *n, NvmeCmd *cmd, NvmeRequest *req);
 
@@ -79,6 +87,9 @@ static void nvme_process_sq_io(void *opaque, int index_poller)
         status = nvme_io_cmd(n, &cmd, req);
         if (status == NVME_SUCCESS) {
             req->status = status;
+            if (femu_wb_off_multilevel_perf_enabled(n)) {
+                req->to_ftl_enq_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+            }
             int rc = femu_ring_enqueue(n->to_ftl[index_poller], (void *)&req, 1);
             if (rc != 1) {
                 femu_err("enqueue failed, ret=%d\n", rc);
@@ -152,12 +163,24 @@ static void nvme_process_cq_cpl(void *arg, int index_poller)
     }
 
     while (femu_ring_count(rp)) {
+        uint64_t now_deq = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+
         req = NULL;
         rc = femu_ring_dequeue(rp, (void *)&req, 1);
         if (rc != 1) {
             femu_err("dequeue from to_poller request failed\n");
         }
         assert(req);
+
+        if (femu_wb_off_multilevel_perf_enabled(n) && req->to_poller_enq_ns > 0) {
+            uint64_t wait_ns = now_deq - req->to_poller_enq_ns;
+
+            if (req->is_write) {
+                n->ssd->wb_off_perf_sub.write_to_poller_wait_ns += wait_ns;
+            } else {
+                n->ssd->wb_off_perf_sub.read_to_poller_wait_ns += wait_ns;
+            }
+        }
 
         pqueue_insert(pq, req);
     }
@@ -182,6 +205,20 @@ static void nvme_process_cq_cpl(void *arg, int index_poller)
                 femu_debug("%s,diff,pq.count=%lu,%" PRId64 ", %lu/%lu\n",
                            n->devname, pqueue_size(pq), now - req->expire_time,
                            n->nr_tt_late_ios, n->nr_tt_ios);
+            }
+        }
+        if (femu_wb_off_multilevel_perf_enabled(n)) {
+            uint64_t late_ns = (now > req->expire_time) ? (now - req->expire_time) : 0;
+            uint64_t e2e_ns = (now > req->stime) ? (now - req->stime) : 0;
+
+            if (req->is_write) {
+                n->ssd->wb_off_perf_sub.write_cqe_late_ns += late_ns;
+                n->ssd->wb_off_perf_sub.write_cqe_late_ios += late_ns ? 1 : 0;
+                n->ssd->wb_off_perf_sub.write_end_to_end_ns += e2e_ns;
+            } else {
+                n->ssd->wb_off_perf_sub.read_cqe_late_ns += late_ns;
+                n->ssd->wb_off_perf_sub.read_cqe_late_ios += late_ns ? 1 : 0;
+                n->ssd->wb_off_perf_sub.read_end_to_end_ns += e2e_ns;
             }
         }
         n->should_isr[req->sq->sqid] = true;
@@ -266,6 +303,9 @@ uint16_t nvme_rw(FemuCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd, NvmeRequest *req)
     uint64_t elba = slba + nlb;
     uint16_t err;
     int ret;
+    bool wb_off_perf = femu_wb_off_multilevel_perf_enabled(n);
+    uint64_t t_submit = wb_off_perf ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
+    uint64_t t_backend = 0;
 
     req->is_write = (rw->opcode == NVME_CMD_WRITE) ? 1 : 0;
 
@@ -290,10 +330,28 @@ uint16_t nvme_rw(FemuCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd, NvmeRequest *req)
 
     if (req->is_write && femu_wb_should_candidate_write(n)) {
         req->wb_candidate = true;
+        if (wb_off_perf) {
+            uint64_t submit_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_submit;
+
+            n->ssd->wb_off_perf_sub.write_submit_cpu_ns += submit_ns;
+        }
         return NVME_SUCCESS;
     }
 
+    t_backend = wb_off_perf ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
     ret = backend_rw(n->mbe, &req->qsg, &data_offset, req->is_write);
+    if (wb_off_perf) {
+        uint64_t backend_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_backend;
+        uint64_t submit_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t_submit;
+
+        if (req->is_write) {
+            n->ssd->wb_off_perf_sub.write_backend_cpu_ns += backend_ns;
+            n->ssd->wb_off_perf_sub.write_submit_cpu_ns += submit_ns;
+        } else {
+            n->ssd->wb_off_perf_sub.read_backend_cpu_ns += backend_ns;
+            n->ssd->wb_off_perf_sub.read_submit_cpu_ns += submit_ns;
+        }
+    }
     if (!ret) {
         return NVME_SUCCESS;
     }

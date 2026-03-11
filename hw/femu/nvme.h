@@ -1012,6 +1012,8 @@ typedef struct NvmeRequest {
     int64_t                 reqlat;
     int64_t                 gcrt;
     int64_t                 expire_time;
+    int64_t                 to_ftl_enq_ns;
+    int64_t                 to_poller_enq_ns;
 
     /* OC2.0: sector offset relative to slba where reads become invalid */
     uint64_t predef;

@@ -200,6 +200,26 @@ typedef struct FemuWbOffPerfSubStat {
     uint64_t ftl_enqueue_ns;
     uint64_t ftl_dispatch_ns;
     uint64_t ftl_prepare_ns;
+    uint64_t read_submit_cpu_ns;
+    uint64_t write_submit_cpu_ns;
+    uint64_t read_backend_cpu_ns;
+    uint64_t write_backend_cpu_ns;
+    uint64_t read_to_ftl_wait_ns;
+    uint64_t write_to_ftl_wait_ns;
+    uint64_t read_to_poller_wait_ns;
+    uint64_t write_to_poller_wait_ns;
+    uint64_t read_cqe_late_ns;
+    uint64_t write_cqe_late_ns;
+    uint64_t read_cqe_late_ios;
+    uint64_t write_cqe_late_ios;
+    uint64_t read_end_to_end_ns;
+    uint64_t write_end_to_end_ns;
+    uint64_t hmb_read_cpu_ns;
+    uint64_t hmb_write_cpu_ns;
+    uint64_t hmb_read_calls;
+    uint64_t hmb_write_calls;
+    uint64_t hmb_read_bytes;
+    uint64_t hmb_write_bytes;
     uint64_t read_lookup_cpu_ns;
     uint64_t read_status_cpu_ns;
     uint64_t write_gc_cpu_ns;
@@ -290,6 +310,10 @@ struct ssd {
     uint64_t wb_off_perf_last_write_meta_lat_ns;
     uint64_t wb_off_perf_last_write_nand_lat_ns;
     uint64_t wb_off_perf_last_write_gc_loops;
+    uint64_t wb_off_perf_last_l1_hits;
+    uint64_t wb_off_perf_last_l1_misses;
+    uint64_t wb_off_perf_last_l2_hits;
+    uint64_t wb_off_perf_last_l2_misses;
 
     FemuWbOffPerfSubStat wb_off_perf_sub;
     FemuWbOffPerfSubStat wb_off_perf_sub_last;
